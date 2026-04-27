@@ -8,14 +8,18 @@ Instead of letting an agent self-certify its work, AgentForce runs a Worker and 
 
 ## Two Core Features
 
-### ⚔️ Adversarial Verifier
+### ⚔️ Zero-Context Adversarial Loop
 
-A dedicated agent whose only job is to **break** the Worker's output — not review it.
+Worker and Verifier are not two modes of the same agent — they are **two freshly spawned agents with completely separate context windows**, set against each other.
 
-> Don't let the agent prove itself right. Let the system try to prove it wrong.
-> Only results that survive attack are accepted.
+The Worker executes a step and reports its result. The Verifier is then spawned from scratch — it has never seen the Worker's reasoning, only its output. It cannot be anchored to the Worker's assumptions. Its sole job is to break the result.
 
-The Verifier runs real execution first: tests, diffs, API responses, reproduced failures. If no execution environment exists, it constructs counterexamples and attacks logic. Phrases like *"looks correct"* or *"should work"* are banned — evidence is required.
+> The Verifier's independence is structural, not instructional.
+> It is a different agent. It genuinely does not know how the Worker got there.
+
+This is what makes the adversarial dynamic real. A single agent asked to "verify its own work" will rationalize. Two isolated agents cannot share blind spots.
+
+The Verifier attacks with real execution first — running tests, reproducing failures, diffing files, checking actual API responses. Phrases like *"looks correct"* or *"should work"* are banned. Evidence is required. Only when the Verifier fails to break the result does the step pass.
 
 ### 🌳 Plan Tree
 
