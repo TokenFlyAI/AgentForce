@@ -67,7 +67,7 @@ New:  propose hypothesis → execute step → adversarial verification
                                         FAIL → navigate / reshape the tree
 ```
 
-The Verifier's result is not just a pass/fail signal — it is the input that drives how the Plan Tree evolves. The Orchestrator reads the failure evidence and decides how to respond:
+Every Verifier result drives how the tree evolves:
 
 ```
 FAIL + retries left      →  Retry        same step, different method
@@ -75,8 +75,6 @@ FAIL + retries exhausted →  New Branch   sibling node with a different approac
 FAIL + branch exhausted  →  Backtrack    walk up the tree, try from a higher node
 FAIL + plan exhausted    →  New Plan     generate a new hypothesis, informed by what failed
 ```
-
-This means the tree is never fixed upfront. Steps are generated lazily — one at a time — and the shape of the tree is determined by what the Verifier finds. A wrong direction gets pruned. A promising branch gets extended. Failed hypotheses become negative examples that steer future planning away from dead ends.
 
 **Example** — task: *"Users can't log in after the auth refactor"*
 
@@ -105,7 +103,7 @@ Plan A's failure evidence ("token logic is valid but login still fails") directl
 
 ---
 
-## Architecture
+## How It Runs
 
 ```
 Orchestrator  (the /agentforce skill)
