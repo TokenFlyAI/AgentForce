@@ -6,6 +6,22 @@ Instead of letting an agent self-certify its work, AgentForce runs a Worker and 
 
 ---
 
+## The Problem
+
+Standard AI agents have a fundamental flaw: they generate answers and declare success themselves.
+
+| Problem | Symptom |
+|---|---|
+| Self-certification | Agent announces "done" — no external check |
+| Fake verification | "Looks correct", "should work" — no evidence |
+| No course correction | Wrong direction → keeps going anyway |
+| Repeated failures | Same mistake made again |
+| Single-shot | Complex tasks cause the agent to collapse |
+
+**Root cause**: agents have generation capability, but no execution and verification system.
+
+---
+
 ## Two Core Features
 
 ### ⚔️ Zero-Context Adversarial Loop
@@ -35,22 +51,6 @@ root
 ```
 
 Steps are generated **lazily** — one at a time based on what was learned — so the system adapts rather than commits to a fixed plan upfront.
-
----
-
-## The Problem
-
-Standard AI agents have a fundamental flaw: they generate answers and declare success themselves.
-
-| Problem | Symptom |
-|---|---|
-| Self-certification | Agent announces "done" — no external check |
-| Fake verification | "Looks correct", "should work" — no evidence |
-| No course correction | Wrong direction → keeps going anyway |
-| Repeated failures | Same mistake made again |
-| Single-shot | Complex tasks cause the agent to collapse |
-
-**Root cause**: agents have generation capability, but no execution and verification system.
 
 ---
 
