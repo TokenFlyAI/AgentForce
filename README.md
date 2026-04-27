@@ -78,6 +78,29 @@ FAIL + plan exhausted    →  New Plan     generate a new hypothesis, informed b
 
 This means the tree is never fixed upfront. Steps are generated lazily — one at a time — and the shape of the tree is determined by what the Verifier finds. A wrong direction gets pruned. A promising branch gets extended. Failed hypotheses become negative examples that steer future planning away from dead ends.
 
+**Example** — task: *"Users can't log in after the auth refactor"*
+
+```
+root
+├── Plan A: "JWT token validation is broken"
+│   ├── Step 1: reproduce login failure          ✅ PASS
+│   ├── Step 2: inspect JWT decode logic         ✅ PASS
+│   └── Step 3: patch token expiry check         ❌ FAIL  (Verifier: login still fails in test)
+│             └── Step 3b: patch token signature ❌ FAIL  (Verifier: signature valid, not the issue)
+│                          ↑ branch exhausted → backtrack → Plan A exhausted
+│
+├── Plan B: "Session cookie is not being set"     ← new hypothesis from Plan A's failure evidence
+│   ├── Step 1: reproduce login failure          ✅ PASS
+│   ├── Step 2: trace cookie set-header in logs  ✅ PASS  (Verifier: header missing on /login)
+│   ├── Step 3: fix Set-Cookie in auth handler   ✅ PASS  (Verifier: header now present)
+│   └── Step 4: end-to-end login test            ✅ PASS  (Verifier: 200 OK + session active)
+│                                                          ↑ DONE
+│
+└── Plan C: "CORS policy blocking credentials"   ← never reached
+```
+
+Plan A's failure evidence ("token logic is valid but login still fails") directly informed Plan B's hypothesis. The tree searched where it needed to, stopped when it found a verified path, and never touched Plan C.
+
 **Core principle**: don't let the agent prove itself right — let the system try to prove it wrong. Only results that survive attack are accepted, and every failure actively reshapes the search.
 
 ---
