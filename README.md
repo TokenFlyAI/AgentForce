@@ -6,6 +6,34 @@ Instead of letting an agent self-certify its work, AgentForce runs a Worker and 
 
 ---
 
+## Two Core Features
+
+### ⚔️ Adversarial Verifier
+
+A dedicated agent whose only job is to **break** the Worker's output — not review it.
+
+> Don't let the agent prove itself right. Let the system try to prove it wrong.
+> Only results that survive attack are accepted.
+
+The Verifier runs real execution first: tests, diffs, API responses, reproduced failures. If no execution environment exists, it constructs counterexamples and attacks logic. Phrases like *"looks correct"* or *"should work"* are banned — evidence is required.
+
+### 🌳 Plan Tree
+
+A tree of hypotheses where **branching can happen at any step**, not just at the top level. When a path fails, the system backtracks to the nearest ancestor and tries a sibling branch — it does not restart from scratch.
+
+```
+root
+├── Plan A  (hypothesis: redirect handler)
+│   └── Step 1 ── Step 2a  ✗ failed
+│             └── Step 2b  ← new branch, different approach
+├── Plan B  (hypothesis: cookie)
+└── Plan C  (hypothesis: session expiry)
+```
+
+Steps are generated **lazily** — one at a time based on what was learned — so the system adapts rather than commits to a fixed plan upfront.
+
+---
+
 ## The Problem
 
 Standard AI agents have a fundamental flaw: they generate answers and declare success themselves.
