@@ -63,11 +63,22 @@ Old:  generate answer → self-declare complete
 
 New:  propose hypothesis → execute step → adversarial verification
                                                     ↓
-                                        PASS (attack failed) → continue
-                                        FAIL (attack succeeded) → fix or switch direction
+                                        PASS → advance in Plan Tree
+                                        FAIL → navigate / reshape the tree
 ```
 
-**Core principle**: don't let the agent prove itself right — let the system try to prove it wrong. Only results that survive attack are accepted.
+The Verifier's result is not just a pass/fail signal — it is the input that drives how the Plan Tree evolves. The Orchestrator reads the failure evidence and decides how to respond:
+
+```
+FAIL + retries left      →  Retry        same step, different method
+FAIL + retries exhausted →  New Branch   sibling node with a different approach
+FAIL + branch exhausted  →  Backtrack    walk up the tree, try from a higher node
+FAIL + plan exhausted    →  New Plan     generate a new hypothesis, informed by what failed
+```
+
+This means the tree is never fixed upfront. Steps are generated lazily — one at a time — and the shape of the tree is determined by what the Verifier finds. A wrong direction gets pruned. A promising branch gets extended. Failed hypotheses become negative examples that steer future planning away from dead ends.
+
+**Core principle**: don't let the agent prove itself right — let the system try to prove it wrong. Only results that survive attack are accepted, and every failure actively reshapes the search.
 
 ---
 
