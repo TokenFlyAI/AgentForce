@@ -2,7 +2,7 @@
 
 An adversarial verification system for AI agents, implemented as a Claude Code slash command.
 
-The Orchestrator (Claude itself) maintains a **Running Tree** — recent history, near-future plan, and long-term hypotheses — and spawns two kinds of isolated sub-agents: an **Executor** that does the work, and a **Verifier** that does not know the task and only fact-checks the Executor's literal claims. A step passes only when the Verifier cannot break it.
+The Orchestrator (Claude itself, using Claude Code's built-in planning) maintains a **Running Tree** of hypotheses and spawns two kinds of isolated sub-agents: an **Executor** that does the work, and a **Verifier** that does not know the task and only fact-checks the Executor's literal claims. A step passes only when the Verifier cannot break it.
 
 ---
 
@@ -45,16 +45,18 @@ The Verifier attacks with real execution: running the command, diffing the file,
 
 ### 🌳 Running Tree
 
-A live three-layer state, **managed by the Orchestrator (Claude itself)**, not a pre-built decision tree.
+A tree of hypotheses where **branching can happen at any step**, not just at the top level. When a path fails, the system backtracks to the nearest ancestor and tries a sibling branch — it does not restart from scratch.
 
 ```
-running-tree.json
-├── long_term     hypotheses: current, alternatives, abandoned (+ why)
-├── history       append-only log of executed steps with claims & evidence
-└── near_future   1–3 concrete steps planned next
+root
+├── Plan A  (hypothesis: redirect handler)
+│   └── Step 1 ── Step 2a  ✗ failed
+│             └── Step 2b  ← new branch, different approach
+├── Plan B  (hypothesis: cookie)
+└── Plan C  (hypothesis: session expiry)
 ```
 
-The Orchestrator commits only to the next 1–3 steps. Deeper planning happens inline using Claude's own reasoning — no rigid tree algorithm. The shape of the search emerges from the history of hypotheses tried and abandoned, with each Verifier result reshaping what comes next.
+The Orchestrator is Claude itself — it uses Claude Code's built-in planning capabilities to generate and reshape the tree. Steps are generated **lazily** — one at a time after the previous step is verified — so the tree shape is determined by what is learned, not pre-committed.
 
 ---
 
@@ -65,54 +67,43 @@ Transform agents from "answer generators" into "search systems":
 ```
 Old:  generate answer → self-declare complete
 
-New:  hypothesize → execute → adversarial verify → update Running Tree
-                                    ↓
-                          PASS → advance, plan next step
-                          FAIL → retry, replan, or switch hypothesis
+New:  propose hypothesis → execute step → adversarial verification
+                                                    ↓
+                                        PASS → advance in Running Tree
+                                        FAIL → navigate / reshape the tree
 ```
 
-Every Verifier result drives how the Running Tree evolves:
+Every Verifier result drives how the tree evolves:
 
 ```
-FAIL + retries left           →  Retry        same step, different method
-FAIL + retries exhausted      →  Replan step  replace step in near_future
-FAIL + hypothesis seems wrong →  Switch hyp.  abandon current, promote alternative
-All hypotheses abandoned      →  Stuck        report what was learned
+FAIL + retries left      →  Retry        same step, different method
+FAIL + retries exhausted →  New Branch   sibling node with a different approach
+FAIL + branch exhausted  →  Backtrack    walk up the tree, try from a higher node
+FAIL + plan exhausted    →  New Plan     generate a new hypothesis, informed by what failed
 ```
 
 **Example** — task: *"Users can't log in after the auth refactor"*
 
 ```
-long_term:
-  current: "JWT validation is broken"
-  alternatives: ["Cookie not set", "CORS blocking credentials"]
-  abandoned: []
-
-history:
-  iter 1: reproduce login failure          → PASS  ("curl /login returns 401")
-  iter 2: inspect JWT decode               → PASS  ("decode logic returns valid claims")
-  iter 3: patch token expiry               → FAIL  ("login still 401 after patch")
-  iter 4: patch token signature            → FAIL  ("signature already valid, no change")
-
-→ Orchestrator concludes JWT is not the issue. Switch hypothesis.
-
-long_term:
-  current: "Cookie not set"
-  alternatives: ["CORS blocking credentials"]
-  abandoned: [
-    { hypothesis: "JWT validation is broken",
-      evidence: "decode + signature both valid; login still fails" }
-  ]
-
-history (continued):
-  iter 5: trace Set-Cookie in /login response  → PASS  ("header missing")
-  iter 6: fix Set-Cookie in auth handler        → PASS  ("header now present")
-  iter 7: end-to-end login test                 → PASS  ("200 OK, session active")
-
-✅ DONE
+root
+├── Plan A: "JWT token validation is broken"
+│   ├── Step 1: reproduce login failure          ✅ PASS
+│   ├── Step 2: inspect JWT decode logic         ✅ PASS
+│   └── Step 3: patch token expiry check         ❌ FAIL  (Verifier: login still fails in test)
+│             └── Step 3b: patch token signature ❌ FAIL  (Verifier: signature valid, not the issue)
+│                          ↑ branch exhausted → backtrack → Plan A exhausted
+│
+├── Plan B: "Session cookie is not being set"     ← new hypothesis from Plan A's failure evidence
+│   ├── Step 1: reproduce login failure          ✅ PASS
+│   ├── Step 2: trace cookie set-header in logs  ✅ PASS  (Verifier: header missing on /login)
+│   ├── Step 3: fix Set-Cookie in auth handler   ✅ PASS  (Verifier: header now present)
+│   └── Step 4: end-to-end login test            ✅ PASS  (Verifier: 200 OK + session active)
+│                                                          ↑ DONE
+│
+└── Plan C: "CORS policy blocking credentials"   ← never reached
 ```
 
-The abandoned JWT hypothesis directly shaped the switch to "cookie not set." The CORS hypothesis was never explored — the search stopped as soon as a verified path existed.
+Plan A's failure evidence ("token logic is valid but login still fails") directly informed Plan B's hypothesis. The tree searched where it needed to, stopped when it found a verified path, and never touched Plan C.
 
 **Core principle**: don't let the agent prove itself right — let the system try to prove it wrong. Only results that survive attack are accepted, and every failure actively reshapes the search.
 
@@ -121,13 +112,16 @@ The abandoned JWT hypothesis directly shaped the switch to "cookie not set." The
 ## How It Runs
 
 ```
-Orchestrator  (Claude itself, running the /agentforce skill)
+Orchestrator  (Claude itself, running the /agentforce skill,
+               using Claude Code's built-in planning)
     │   plans, decides, maintains state — does NOT execute
     │
     ├── Running Tree  (.agentforce/running-tree.json)
-    │       ├── long_term     current/alternative/abandoned hypotheses
-    │       ├── history       append-only execution log
-    │       └── near_future   1–3 planned steps
+    │       ├── plan_a  (hypothesis 1)
+    │       │     └── step_1 ── step_2a
+    │       │                └── step_2b  ← branch on failure
+    │       ├── plan_b  (hypothesis 2)
+    │       └── plan_c  (hypothesis 3)
     │
     ├── Executor sub-agent     (fresh context, KNOWS the task)
     │       └── executes one step, returns a concrete factual claim
@@ -136,7 +130,7 @@ Orchestrator  (Claude itself, running the /agentforce skill)
             └── attacks the literal claim, returns pass/fail + evidence
 ```
 
-Every loop: Orchestrator picks a step → spawns Executor → spawns Verifier → updates Running Tree → loops. State is fully persisted between iterations.
+Every loop: Orchestrator picks the current step → spawns Executor → spawns Verifier → applies retry/branch/backtrack/new-plan logic → updates Running Tree → loops. State is fully persisted between iterations.
 
 ---
 
@@ -214,26 +208,18 @@ cat .agentforce/running-tree.json
 {
   "task": "Fix the failing test in auth.py",
   "status": "executing",
-  "long_term": {
-    "current_hypothesis": "Cookie not set",
-    "alternatives": ["CORS blocking credentials"],
-    "abandoned": [
-      {
-        "hypothesis": "JWT validation is broken",
-        "evidence": "decode and signature both valid; login still fails"
-      }
-    ]
-  },
-  "history": [
-    {
-      "iter": 1,
-      "step": "reproduce login failure",
+  "current_node": "a_s2b",
+  "nodes": {
+    "root": { "children": ["plan_a", "plan_b", "plan_c"], "tried": [] },
+    "plan_a": { "hypothesis": "cookie handling is broken", "status": "active" },
+    "a_s1": {
+      "status": "passed",
       "executor_claim": "curl /login returns 401",
-      "verifier_passed": true,
       "verifier_evidence": "confirmed via curl -i"
-    }
-  ],
-  "near_future": ["fix Set-Cookie in auth handler", "run full test suite"]
+    },
+    "a_s2a": { "status": "failed", "failure_reason": "test still red after patch" },
+    "a_s2b": { "status": "pending", "retry_count": 0 }
+  }
 }
 ```
 
@@ -273,10 +259,10 @@ At runtime, the working directory gets:
 
 1. **Verifier has no task context** — it only verifies a literal factual claim
 2. **Executor must produce checkable claims** — "the bug is fixed" is rejected; "`pytest` exits 0 with N passed" is accepted
-3. **Orchestrator does not execute** — it plans, decides, and writes state; all concrete actions go through sub-agents
+3. **Orchestrator does not execute** — it plans (using Claude Code's built-in planning), decides, and writes state; all concrete actions go through sub-agents
 4. **State writes happen every iteration** — Running Tree is always inspectable and resumable
-5. **Failed hypotheses carry evidence** — abandoned entries are negative examples for future planning
-6. **Resource ceilings** — `max_retry_per_step: 2`, hypothesis switches bounded by alternatives + new ones generated on demand
+5. **Failed plans carry evidence** — failure reasons from the Verifier become negative examples when generating new plans
+6. **Resource ceilings** — `max_retry_per_step: 2`, `max_branches_per_node: 3`, `max_plans: 5`
 
 ---
 

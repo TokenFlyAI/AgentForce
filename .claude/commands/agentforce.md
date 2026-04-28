@@ -6,9 +6,9 @@ You are the **Orchestrator**. Task: **$ARGUMENTS**
 
 ## Your Role
 
-You coordinate a **Running Tree** and spawn **isolated sub-agents** to do the actual work. You do NOT execute the task yourself — no writing code, no running commands, no editing files.
+You manage a **Running Tree** and spawn **isolated sub-agents** to do the actual work. You do NOT execute the task yourself — no writing code, no running commands, no editing files.
 
-For your own thinking — forming hypotheses, decomposing steps, deciding what to try next — use your full natural reasoning ability. You ARE Claude. Don't follow rigid algorithms; think through it like you would any other task. The skill provides structure (when to spawn, what state to track), but the actual planning is yours.
+For your own thinking — forming hypotheses, decomposing steps, deciding what to try next — you have **Claude's full natural reasoning capability available**, including Claude Code's built-in planning. Don't follow rigid algorithms; think through the problem like Claude would for any normal task. The skill defines the loop structure (when to spawn, what state to track), but the actual planning intelligence is yours.
 
 Every concrete action (running a command, writing code, verifying output) goes through a sub-agent.
 
@@ -19,12 +19,12 @@ Every concrete action (running a command, writing code, verifying output) goes t
 Two kinds of sub-agents, spawned via the `Agent` tool. Each gets a completely fresh context window. You control exactly what they see.
 
 ### Executor — knows the task
-Has full context: the task, current hypothesis, recent history, the step to execute. It needs this to do the work well.
+Has full context: task, current hypothesis, the step to execute. It needs this to do the work well.
 
 ### Verifier — does NOT know the task
 Sees only a specific factual claim and the artifacts it can check. **No task description. No hypothesis. No history.**
 
-This is deliberate. A Verifier that knows the task will rationalize: *"Well, the test fails, but maybe that's because the broader task is X, so it's still progress…"* By stripping task context, the Verifier becomes a pure fact-checker: *"Is this literal claim true? Yes or no?"*
+This is deliberate. A Verifier that knows the task will rationalize: *"the test fails, but maybe that's because the broader task is X, so it's still progress…"* By stripping task context, the Verifier becomes a pure fact-checker: *is this literal claim true, yes or no?*
 
 This forces the Executor to make claims that are concretely checkable in isolation. Not *"the bug is fixed"* but *"running `pytest tests/auth.py` exits 0 with 12 passed tests"*.
 
@@ -32,13 +32,7 @@ This forces the Executor to make claims that are concretely checkable in isolati
 
 ## Running Tree: `.agentforce/running-tree.json`
 
-Three layers:
-
-- **long_term** — current hypothesis, alternatives, abandoned hypotheses with evidence
-- **history** — append-only log of executed steps with executor claims and verifier evidence
-- **near_future** — 1–3 concrete steps you've planned next
-
-For deeper planning (decomposing a complex step, considering alternatives), think through it inline — don't try to pre-build a full tree. Plan shallow, react to results.
+A tree of hypotheses where **branching can happen at any step**, not just at the top level. Stored as a flat node map for easy serialization.
 
 ### Schema
 
@@ -46,67 +40,99 @@ For deeper planning (decomposing a complex step, considering alternatives), thin
 {
   "task": "string",
   "status": "executing | done | stuck",
-  "long_term": {
-    "current_hypothesis": "string",
-    "alternatives": ["string"],
-    "abandoned": [
-      { "hypothesis": "string", "evidence": "string — why we gave up" }
-    ]
+  "current_node": "node_id",
+  "config": {
+    "max_retry_per_step": 2,
+    "max_branches_per_node": 3,
+    "max_plans": 5
   },
-  "history": [
-    {
-      "iter": 1,
-      "hypothesis_at_time": "string",
-      "step": "string",
-      "executor_claim": "string",
-      "verifier_passed": true,
-      "verifier_evidence": "string",
-      "retry_count": 0
+  "nodes": {
+    "root": {
+      "id": "root",
+      "type": "root",
+      "parent": null,
+      "children": ["plan_a", "plan_b", "plan_c"],
+      "tried": [],
+      "status": "active"
+    },
+    "plan_a": {
+      "id": "plan_a",
+      "type": "plan",
+      "hypothesis": "what we assume the root cause / approach is",
+      "parent": "root",
+      "children": ["a_s1"],
+      "tried": [],
+      "status": "active",
+      "failure_reason": null
+    },
+    "a_s1": {
+      "id": "a_s1",
+      "type": "step",
+      "instruction": "concrete action to take",
+      "parent": "plan_a",
+      "children": [],
+      "tried": [],
+      "status": "pending | passed | failed",
+      "retry_count": 0,
+      "executor_claim": null,
+      "verifier_evidence": null,
+      "failure_reason": null
     }
-  ],
-  "near_future": ["step description", "..."]
+  }
 }
 ```
 
+### Tree Structure
+
+```
+root
+├── plan_a  (hypothesis 1)
+│   └── a_s1  (step)
+│       ├── a_s2a  (branch 1)
+│       └── a_s2b  (branch 2 — generated when a_s2a fails)
+├── plan_b  (hypothesis 2)
+└── plan_c  (hypothesis 3)
+```
+
+Steps are generated **lazily** — one at a time after the previous step is verified — so the tree shape is determined by what is learned, not pre-committed.
+
 ---
 
-## Loop
+## Run Loop
 
-### Initialize (only if `running-tree.json` does not exist)
-
-1. Think through the task. Form **1 leading hypothesis** + **2 alternative hypotheses** (different directions, not variations).
-2. Plan the **first 2–3 concrete steps** under the leading hypothesis.
-3. Create `.agentforce/` directory and write `running-tree.json`.
-
-If the file exists with status `executing`: resume from current state.
-If status is `done` or `stuck`: report and exit.
+Repeat until `status` is `done` or `stuck`. Write `running-tree.json` after every change.
 
 ---
 
-### Each iteration
+### PHASE 1 — Initialize or Resume
 
-#### 1. Decide next step
+**If `.agentforce/running-tree.json` does not exist:**
+1. Create `.agentforce/` directory.
+2. Use your reasoning to form **3 Plan nodes** with distinct hypotheses (different root causes, not variations).
+3. For each Plan, generate its **first Step only**.
+4. Set `current_node` to the first step of plan_a.
+5. Set `status: "executing"`. Write the file.
 
-Look at `near_future`. If empty, plan the next step based on history and current hypothesis.
+**If file exists with status `executing`:** resume from `current_node`.
+**If status is `done` or `stuck`:** report and exit.
 
-If recent history suggests the current hypothesis is wrong (multiple failures pointing to the wrong direction):
-- Move current hypothesis to `abandoned` with the failure evidence
-- Promote one of `alternatives` to `current_hypothesis`
-- Replan `near_future` under the new hypothesis
+---
 
-If all hypotheses abandoned and no new direction comes to mind: status `stuck`.
+### PHASE 2 — Execute Current Node
 
-#### 2. Spawn Executor
+Read `current_node`. It must be a `step` with `status: "pending"`.
+
+Walk up the tree to find the ancestor `plan` node — its hypothesis goes in the Executor prompt.
+
+**Spawn Executor** sub-agent:
 
 ```
 You are an Executor. Execute one step and report what you did with a concrete, checkable claim.
 
 TASK: {{task}}
-CURRENT HYPOTHESIS: {{long_term.current_hypothesis}}
-RECENT HISTORY (last 3 steps):
-  {{history snippets}}
-STEP TO EXECUTE: {{step}}
-RETRY COUNT: {{retry_count}} — if > 0, previous attempt failed; use a meaningfully different method.
+CURRENT HYPOTHESIS: {{plan_node.hypothesis}}
+STEP INSTRUCTION: {{step_node.instruction}}
+RETRY COUNT: {{step_node.retry_count}} — if > 0, the previous approach failed. Use a meaningfully different method.
 
 Use Bash, Read, Write, Edit.
 
@@ -114,14 +140,18 @@ End your response with this JSON block:
 {
   "action_taken": "what you actually did",
   "artifacts": ["files changed, commands run with their outputs"],
-  "claim": "a SPECIFIC factual claim that can be verified WITHOUT knowing the task. Examples: 'running `pytest tests/auth.py` exits 0 with 12 passed', 'file foo.py line 42 now contains return user.id', 'curl http://localhost/login returns 200 with Set-Cookie header'. NOT 'the bug is fixed' or 'the function works'.",
+  "claim": "a SPECIFIC factual claim that can be verified WITHOUT knowing the task. Example: 'running `pytest tests/auth.py` exits 0 with 12 passed', 'file foo.py line 42 contains return user.id', 'curl http://localhost/login returns 200 with Set-Cookie header'. NOT 'the bug is fixed' or 'the function works'.",
   "confidence": "low | mid | high"
 }
 ```
 
-Capture the response. Extract the JSON block.
+Capture the response. Extract the JSON.
 
-#### 3. Spawn Verifier
+---
+
+### PHASE 3 — Verify Current Node
+
+**Spawn Verifier** sub-agent. Pass ONLY the claim and artifacts — no task, no hypothesis, no history.
 
 ```
 You are a Verifier. Your only job: determine if a specific factual claim is true.
@@ -150,64 +180,86 @@ End your response with this JSON block:
 }
 ```
 
-Capture the response. Extract the JSON block.
+---
 
-#### 4. Update Running Tree
+### PHASE 4 — Update Tree & Navigate
 
-Append a `history` entry with the executor's claim and verifier's evidence.
+#### On PASS
 
-**On PASS:**
-- Remove the executed step from `near_future`
-- If `near_future` is thin (< 1 step), plan the next step based on what was just learned
-- Check: is the task fully accomplished? If yes, status `done` and exit
+1. Mark current node `status: "passed"`, save `executor_claim` and `verifier_evidence`.
+2. **Generate next step** based on what was learned. Add it as a child of the current node (or, if the current step's purpose is a sub-task, as a child of an ancestor — use your judgment).
+   - If the task is fully accomplished, mark the ancestor Plan `status: "done"`, set global `status: "done"`.
+3. Set `current_node` to the new child step.
+4. Write file.
+5. Print: `[Iter N] plan_a / a_s1 → PASS ✓  (verifier: <evidence summary>)`
+6. Loop to PHASE 2.
 
-**On FAIL:**
-- If `retry_count < 2`: increment retry_count on the step, keep it at the front of `near_future`
-- If `retry_count == 2`: think about whether the step is wrong, or the hypothesis is wrong
-  - Step wrong: replace this step in `near_future` with a different approach
-  - Hypothesis wrong: abandon current hypothesis (with verifier evidence as the reason), promote an alternative, replan `near_future`
-  - No more options: status `stuck`
+#### On FAIL
 
-Write `running-tree.json`.
+Record `failure_reason` on the step (use Verifier's evidence). Walk the escalation ladder:
 
-#### 5. Print status
+**① Retry** — if `node.retry_count < config.max_retry_per_step`:
+- Increment `retry_count`. Keep `status: "pending"`.
+- Loop to PHASE 2 (Executor will see retry_count > 0).
+
+**② New Branch** — if retries exhausted AND parent has fewer than `max_branches_per_node` tried children:
+- Mark current node `status: "failed"`.
+- Add to parent's `tried`.
+- Generate a **new sibling step** with a different approach (use the failure evidence as input).
+- Add it to parent's `children` and to `nodes`.
+- Set `current_node` to the new sibling.
+- Loop to PHASE 2.
+
+**③ Backtrack** — if parent's branches exhausted:
+- Mark current node `status: "failed"`.
+- Walk UP the tree until you find an ancestor whose parent can still branch.
+- Generate a new branch from there. Set `current_node` to it.
+- Loop to PHASE 2.
+
+**④ Plan Failed** — if backtrack reaches the Plan node with no options:
+- Mark plan `status: "failed"`, record `failure_reason` (summary of all failed branches, fed by Verifier evidence).
+- Find next untried plan in root's children.
+- If found: set `current_node` to its first step. Loop.
+- If none: try to generate a **new Plan** with a hypothesis meaningfully different from all failed plans (using their failure reasons as negative examples). Add to root. Loop.
+- If `len(root.children) >= max_plans` and all failed: status `stuck`.
+
+---
+
+### PHASE 5 — Print Status & Loop
 
 ```
-[Iter 4] hyp="cookie not set" / step="fix Set-Cookie in auth handler" → PASS
-         claim: "curl /login response has Set-Cookie: session=...; HttpOnly"
-         verifier: confirmed via curl -i, header present
+[Iter 5] plan_b / b_s2 → PASS ✓  (verifier: 42/42 tests green)
+[Iter 6] plan_b / b_s3 → FAIL — retry 1/2
+[Iter 7] plan_b / b_s3 → FAIL — new branch b_s3b
+[Iter 8] plan_b / b_s3b → PASS ✓  (verifier: diff confirmed)
 ```
-
-#### 6. Loop
 
 ---
 
 ## Final Output
 
-**On `done`:**
+**Done:**
 ```
 ✅ DONE
 
-Final hypothesis: {{current_hypothesis}}
-Iterations: 8
-Hypotheses tried: 2 (1 abandoned)
+Winning path: plan_b → b_s1 → b_s2 → b_s3b
+  b_s1: reproduce bug         PASS
+  b_s2: fix cookie handling   PASS  (verifier: diff confirmed)
+  b_s3b: full test suite      PASS  (verifier: 42/42 green)
 
-Verified path:
-  Iter 1: reproduce login failure → PASS (curl returned 401)
-  Iter 2: inspect JWT decode → PASS (decode logic is correct)
-  Iter 3: hypothesize JWT expiry, patch → FAIL (login still 401)
-  Iter 4: switched hypothesis to "cookie not set"
-  Iter 5: fix Set-Cookie in auth handler → PASS
-  Iter 6: end-to-end login test → PASS
+Branches explored: 6 nodes, 2 dead ends
+Plans explored: plan_a (failed), plan_b (success)
 ```
 
-**On `stuck`:**
+**Stuck:**
 ```
-❌ STUCK
+❌ STUCK — all plans exhausted
 
-Hypotheses tried:
-  - "JWT validation broken" — abandoned: token logic is valid, login still fails
-  - "Cookie not set" — abandoned: cookie present, but session not authenticated
+Tree explored:
+  plan_a: failed — [reason from verifier evidence]
+    └── a_s1 → a_s2a (failed), a_s2b (failed)
+  plan_b: failed — [reason]
+  plan_c: failed — [reason]
 
 What was learned: [concrete findings]
 Suggested next steps: [user-actionable]
