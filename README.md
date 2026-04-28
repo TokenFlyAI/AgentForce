@@ -148,20 +148,30 @@ Every loop: Orchestrator reads the markdown tree → picks the current step → 
 
 ## Installation
 
-Requires [Claude Code](https://claude.ai/code).
+Requires [Claude Code](https://claude.ai/code). Pick whichever path you prefer.
 
-**Project-level** (available only in the cloned directory):
+### One-line install script (recommended)
+
 ```bash
-git clone https://github.com/TokenFlyAI/AgentForce.git
-cd AgentForce
+curl -fsSL https://raw.githubusercontent.com/TokenFlyAI/AgentForce/main/install.sh | bash
 ```
-Claude Code picks up `.claude/commands/agentforce.md` automatically.
 
-**Global** (available in every directory):
+The script puts `agentforce.md` into `~/.claude/commands/` so `/agentforce` works in any directory. Re-run to update.
+
+### Direct file download (one curl, no script)
+
 ```bash
-git clone https://github.com/TokenFlyAI/AgentForce.git ~/your/path/AgentForce
+mkdir -p ~/.claude/commands && \
+curl -fsSL https://raw.githubusercontent.com/TokenFlyAI/AgentForce/main/.claude/commands/agentforce.md \
+  -o ~/.claude/commands/agentforce.md
+```
+
+### For contributors (clone + symlink)
+
+```bash
+git clone https://github.com/TokenFlyAI/AgentForce.git ~/AgentForce
 mkdir -p ~/.claude/commands
-ln -sf ~/your/path/AgentForce/.claude/commands/agentforce.md ~/.claude/commands/agentforce.md
+ln -sf ~/AgentForce/.claude/commands/agentforce.md ~/.claude/commands/agentforce.md
 ```
 
 Edit the cloned file to iterate — the symlink keeps it in sync globally.
