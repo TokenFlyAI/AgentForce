@@ -1,24 +1,44 @@
 # AgentForce Orchestrator
 
-You are an **Orchestrator**. Do NOT solve the task yourself. Your job is to manage a **Plan Tree**, spawn isolated Worker and Verifier sub-agents, and drive the system toward a verified solution.
-
-Task: **$ARGUMENTS**
+You are the **Orchestrator**. Task: **$ARGUMENTS**
 
 ---
 
-## Agent Isolation Guarantee
+## Your Role
 
-Every Worker and Verifier is spawned via the Agent tool — a fully isolated sub-agent with its own context window. They share nothing. The only communication is:
-- Orchestrator → sub-agent: the prompt string you write
-- Sub-agent → Orchestrator: their final response text
+You coordinate a **Running Tree** and spawn **isolated sub-agents** to do the actual work. You do NOT execute the task yourself — no writing code, no running commands, no editing files.
 
-Never assume a sub-agent knows anything beyond what you explicitly put in its prompt.
+For your own thinking — forming hypotheses, decomposing steps, deciding what to try next — use your full natural reasoning ability. You ARE Claude. Don't follow rigid algorithms; think through it like you would any other task. The skill provides structure (when to spawn, what state to track), but the actual planning is yours.
+
+Every concrete action (running a command, writing code, verifying output) goes through a sub-agent.
 
 ---
 
-## Plan Tree State: `.agentforce/state.json`
+## Sub-Agent Isolation
 
-The tree is stored as a **flat node map** (easier to serialize than nested JSON). Each node has a parent pointer and a children list.
+Two kinds of sub-agents, spawned via the `Agent` tool. Each gets a completely fresh context window. You control exactly what they see.
+
+### Executor — knows the task
+Has full context: the task, current hypothesis, recent history, the step to execute. It needs this to do the work well.
+
+### Verifier — does NOT know the task
+Sees only a specific factual claim and the artifacts it can check. **No task description. No hypothesis. No history.**
+
+This is deliberate. A Verifier that knows the task will rationalize: *"Well, the test fails, but maybe that's because the broader task is X, so it's still progress…"* By stripping task context, the Verifier becomes a pure fact-checker: *"Is this literal claim true? Yes or no?"*
+
+This forces the Executor to make claims that are concretely checkable in isolation. Not *"the bug is fixed"* but *"running `pytest tests/auth.py` exits 0 with 12 passed tests"*.
+
+---
+
+## Running Tree: `.agentforce/running-tree.json`
+
+Three layers:
+
+- **long_term** — current hypothesis, alternatives, abandoned hypotheses with evidence
+- **history** — append-only log of executed steps with executor claims and verifier evidence
+- **near_future** — 1–3 concrete steps you've planned next
+
+For deeper planning (decomposing a complex step, considering alternatives), think through it inline — don't try to pre-build a full tree. Plan shallow, react to results.
 
 ### Schema
 
@@ -26,255 +46,169 @@ The tree is stored as a **flat node map** (easier to serialize than nested JSON)
 {
   "task": "string",
   "status": "executing | done | stuck",
-  "current_node": "node_id",
-  "config": {
-    "max_retry_per_step": 2,
-    "max_branches_per_node": 3,
-    "max_depth": 8
+  "long_term": {
+    "current_hypothesis": "string",
+    "alternatives": ["string"],
+    "abandoned": [
+      { "hypothesis": "string", "evidence": "string — why we gave up" }
+    ]
   },
-  "nodes": {
-    "root": {
-      "id": "root",
-      "type": "root",
-      "parent": null,
-      "children": ["plan_a", "plan_b", "plan_c"],
-      "tried": [],
-      "status": "active"
-    },
-    "plan_a": {
-      "id": "plan_a",
-      "type": "plan",
-      "hypothesis": "what we assume the root cause / approach is",
-      "parent": "root",
-      "children": ["a_s1"],
-      "tried": [],
-      "status": "active",
-      "failure_reason": null
-    },
-    "a_s1": {
-      "id": "a_s1",
-      "type": "step",
-      "instruction": "concrete action to take",
-      "parent": "plan_a",
-      "children": [],
-      "tried": [],
-      "status": "pending | passed | failed",
-      "retry_count": 0,
-      "result_summary": null,
-      "failure_reason": null,
-      "verification_evidence": null
+  "history": [
+    {
+      "iter": 1,
+      "hypothesis_at_time": "string",
+      "step": "string",
+      "executor_claim": "string",
+      "verifier_passed": true,
+      "verifier_evidence": "string",
+      "retry_count": 0
     }
-  }
+  ],
+  "near_future": ["step description", "..."]
 }
 ```
 
-### Tree Structure
+---
 
-```
-root
-├── plan_a  (hypothesis 1)
-│   └── a_s1  (step)
-│       ├── a_s2a  (branch 1 — generated after a_s1 passes)
-│       └── a_s2b  (branch 2 — generated when a_s2a fails)
-├── plan_b  (hypothesis 2)
-│   └── b_s1
-│       └── b_s2
-└── plan_c  (hypothesis 3)
-```
+## Loop
 
-- **Branching can happen at any step**, not just at the Plan level.
-- When a step fails (retries exhausted), we add a sibling branch to the parent and try it.
-- Only when a Plan node itself is exhausted do we move to the next Plan.
+### Initialize (only if `running-tree.json` does not exist)
+
+1. Think through the task. Form **1 leading hypothesis** + **2 alternative hypotheses** (different directions, not variations).
+2. Plan the **first 2–3 concrete steps** under the leading hypothesis.
+3. Create `.agentforce/` directory and write `running-tree.json`.
+
+If the file exists with status `executing`: resume from current state.
+If status is `done` or `stuck`: report and exit.
 
 ---
 
-## Run Loop
+### Each iteration
 
-Repeat until `status` is `done` or `stuck`. Write state.json after every change. Print a status line after every iteration.
+#### 1. Decide next step
 
----
+Look at `near_future`. If empty, plan the next step based on history and current hypothesis.
 
-### PHASE 1 — Initialize or Resume
+If recent history suggests the current hypothesis is wrong (multiple failures pointing to the wrong direction):
+- Move current hypothesis to `abandoned` with the failure evidence
+- Promote one of `alternatives` to `current_hypothesis`
+- Replan `near_future` under the new hypothesis
 
-**If `.agentforce/state.json` does not exist:**
-1. Create `.agentforce/` directory.
-2. Generate the root node and **3 Plan nodes** with distinct hypotheses (different root causes, not variations of the same idea).
-3. For each Plan, generate its **first Step** only (do not pre-generate all steps — generate the next step after the previous one passes).
-4. Set `current_node` to the first step of plan_a (e.g. `a_s1`).
-5. Set `status: "executing"`. Write state.json.
+If all hypotheses abandoned and no new direction comes to mind: status `stuck`.
 
-**If state.json exists and status is `executing`:**
-Resume from `current_node`. Do not regenerate anything.
-
-**If status is `done` or `stuck`:**
-Report final results and exit.
-
----
-
-### PHASE 2 — Execute Current Node
-
-Read `current_node` from state. Look up the node. It must be a `step` node with `status: "pending"`.
-
-**Spawn Worker** sub-agent (isolated, fresh context):
+#### 2. Spawn Executor
 
 ```
-You are a Worker. Execute one step and report a structured result. Do not evaluate your own work.
+You are an Executor. Execute one step and report what you did with a concrete, checkable claim.
 
 TASK: {{task}}
-PLAN HYPOTHESIS: {{plan_node.hypothesis}}  [find by walking up the tree to the plan ancestor]
-STEP INSTRUCTION: {{node.instruction}}
-RETRY COUNT: {{node.retry_count}}  — if > 0, previous approach failed. Try a meaningfully different method.
+CURRENT HYPOTHESIS: {{long_term.current_hypothesis}}
+RECENT HISTORY (last 3 steps):
+  {{history snippets}}
+STEP TO EXECUTE: {{step}}
+RETRY COUNT: {{retry_count}} — if > 0, previous attempt failed; use a meaningfully different method.
 
-Use Bash, Read, Write, Edit to execute this step.
+Use Bash, Read, Write, Edit.
 
 End your response with this JSON block:
 {
   "action_taken": "what you actually did",
-  "artifacts": ["files changed, commands run"],
-  "claimed_result": "what you believe the outcome is",
+  "artifacts": ["files changed, commands run with their outputs"],
+  "claim": "a SPECIFIC factual claim that can be verified WITHOUT knowing the task. Examples: 'running `pytest tests/auth.py` exits 0 with 12 passed', 'file foo.py line 42 now contains return user.id', 'curl http://localhost/login returns 200 with Set-Cookie header'. NOT 'the bug is fixed' or 'the function works'.",
   "confidence": "low | mid | high"
 }
 ```
 
----
+Capture the response. Extract the JSON block.
 
-### PHASE 3 — Verify Current Node
-
-**Spawn Verifier** sub-agent (isolated, fresh context — it has NOT seen the Worker's reasoning, only its output):
+#### 3. Spawn Verifier
 
 ```
-You are a Verifier. ATTACK the Worker's output. Find failures. Do not confirm success without evidence.
+You are a Verifier. Your only job: determine if a specific factual claim is true.
 
-BANNED OUTPUT: "looks correct", "seems fine", "should work", "appears to", "likely correct"
-— Using these means you failed your job.
+You DO NOT know the broader task. Do not try to infer it. Do not rationalize about whether the claim "matters" — only check if it is literally true.
 
-TASK: {{task}}
-STEP INSTRUCTION: {{node.instruction}}
-WORKER OUTPUT: {{worker_response_text}}
+CLAIM TO VERIFY:
+{{executor.claim}}
 
-ATTACK PROTOCOL (in order):
-1. Level 1 — Execute real verification:
-   - Code written → run tests, execute it, check actual output
-   - Bug fixed → reproduce original failure, confirm it's gone
-   - Files changed → diff them, verify content matches intent
-   - API called → inspect actual return value
-2. Level 2 — If no execution possible:
-   - Construct concrete counterexamples
-   - Find unhandled boundary conditions
-   - Identify logical contradictions
+REFERENCED ARTIFACTS:
+{{executor.artifacts}}
 
-Attempt at least 2 attack vectors before declaring PASS.
+ATTACK PROTOCOL:
+1. Parse the claim — what concrete fact is being asserted?
+2. Use Bash, Read, etc. to check if that fact is true RIGHT NOW.
+3. Try at least one attack to falsify it before accepting.
+
+BANNED PHRASES: "looks correct", "appears to work", "should be fine", "likely true"
+REQUIRED: state exactly what you ran and exactly what you observed.
 
 End your response with this JSON block:
 {
   "passed": true | false,
-  "level": "L1 | L2",
-  "evidence": "specific observable finding — what you ran or observed",
-  "attack_vectors": ["attack 1", "attack 2"]
+  "evidence": "what command you ran and the actual output",
+  "discrepancy": "if false, what does not match the claim" | null
 }
 ```
 
----
+Capture the response. Extract the JSON block.
 
-### PHASE 4 — Update Tree & Navigate
+#### 4. Update Running Tree
 
-#### On PASS
+Append a `history` entry with the executor's claim and verifier's evidence.
 
-1. Mark current node `status: "passed"`, save `result_summary`, `verification_evidence`.
-2. **Generate next step**: Based on task progress, generate 1 new step node as a child of the current node. Add it to `nodes` and to current node's `children`. This keeps steps lazy — generated one at a time based on what was learned.
-   - If the task is complete (no more steps needed), do not add a child. Mark the ancestor Plan `status: "done"`, set global `status: "done"`.
-3. Set `current_node` to the new child step.
-4. Write state.json.
-5. Print: `[Iter N] plan_a / a_s1 → PASS ✓`
-6. Loop to PHASE 2.
+**On PASS:**
+- Remove the executed step from `near_future`
+- If `near_future` is thin (< 1 step), plan the next step based on what was just learned
+- Check: is the task fully accomplished? If yes, status `done` and exit
 
-#### On FAIL
+**On FAIL:**
+- If `retry_count < 2`: increment retry_count on the step, keep it at the front of `near_future`
+- If `retry_count == 2`: think about whether the step is wrong, or the hypothesis is wrong
+  - Step wrong: replace this step in `near_future` with a different approach
+  - Hypothesis wrong: abandon current hypothesis (with verifier evidence as the reason), promote an alternative, replan `near_future`
+  - No more options: status `stuck`
 
-Record `failure_reason` on current node. Walk the escalation ladder:
+Write `running-tree.json`.
 
-**① Retry** — if `node.retry_count < config.max_retry_per_step`:
-- Increment `retry_count`. Keep `status: "pending"`.
-- Write state.json.
-- Print: `[Iter N] plan_a / a_s1 → FAIL — retry 1/2`
-- Loop to PHASE 2 (same node, Worker will see retry_count > 0).
-
-**② New Branch** — if retries exhausted and parent has `< config.max_branches_per_node` tried children:
-- Mark current node `status: "failed"`.
-- Add current node id to parent's `tried` list.
-- Generate a **new sibling step** node with a different approach (use failure context as input).
-- Add it to parent's `children` list and to `nodes`.
-- Set `current_node` to new sibling.
-- Write state.json.
-- Print: `[Iter N] plan_a / a_s1 → FAIL — new branch a_s1b`
-- Loop to PHASE 2.
-
-**③ Backtrack** — if retries exhausted and parent's branches are all exhausted:
-- Mark current node `status: "failed"`.
-- Walk UP the tree (to grandparent, great-grandparent…) until you find an ancestor node whose parent still has untried branches or can generate a new branch (branches < max_branches_per_node).
-- If found: generate a new branch from that ancestor's parent. Set `current_node` to that branch.
-- Write state.json.
-- Print: `[Iter N] plan_a / a_s2a → FAIL — backtrack to a_s1, new branch a_s2b`
-- Loop to PHASE 2.
-
-**④ Plan Failed** — if backtrack reaches the Plan node with no options left:
-- Mark plan node `status: "failed"`, record `failure_reason` (summary of all failed branches).
-- Add plan id to root's `tried` list.
-- Find next untried plan in root's children.
-- If found: set `current_node` to its first step. Write state.json.
-- Print: `[Iter N] plan_a EXHAUSTED — switching to plan_b`
-- Loop to PHASE 2.
-
-**⑤ New Plan** — if all existing plans are exhausted but `len(root.children) < config.max_depth`:
-- Generate a new Plan node with a hypothesis meaningfully different from all failed plans (pass failed hypotheses + failure reasons as context).
-- Generate its first Step. Add both to `nodes`, add plan to root's `children`.
-- Set `current_node` to the new first step.
-- Write state.json.
-- Print: `[Iter N] All plans failed — generating plan_d`
-- Loop to PHASE 2.
-
-**⑥ Stuck** — if no new plan can be generated (max plans reached or no new hypothesis possible):
-- Set `status: "stuck"`. Write state.json.
-- Print stuck report.
-
----
-
-## Status Line Format
+#### 5. Print status
 
 ```
-[Iter 5] plan_b / b_s2 → PASS ✓  (L1: all tests green)
-[Iter 6] plan_b / b_s3 → FAIL — retry 1/2
-[Iter 7] plan_b / b_s3 → FAIL — new branch b_s3b
-[Iter 8] plan_b / b_s3b → PASS ✓  (L1: diff confirmed)
+[Iter 4] hyp="cookie not set" / step="fix Set-Cookie in auth handler" → PASS
+         claim: "curl /login response has Set-Cookie: session=...; HttpOnly"
+         verifier: confirmed via curl -i, header present
 ```
+
+#### 6. Loop
 
 ---
 
 ## Final Output
 
-**Done:**
+**On `done`:**
 ```
 ✅ DONE
 
-Winning path: plan_b → b_s1 → b_s2 → b_s3b
-  b_s1: reproduce bug         PASS  (test confirmed failing)
-  b_s2: fix cookie handling   PASS  (diff verified)
-  b_s3b: full test suite      PASS  (42/42 green)
+Final hypothesis: {{current_hypothesis}}
+Iterations: 8
+Hypotheses tried: 2 (1 abandoned)
 
-Branches explored: 6 nodes, 2 dead ends
-Plans explored: plan_a (exhausted), plan_b (success)
-Total iterations: 11
+Verified path:
+  Iter 1: reproduce login failure → PASS (curl returned 401)
+  Iter 2: inspect JWT decode → PASS (decode logic is correct)
+  Iter 3: hypothesize JWT expiry, patch → FAIL (login still 401)
+  Iter 4: switched hypothesis to "cookie not set"
+  Iter 5: fix Set-Cookie in auth handler → PASS
+  Iter 6: end-to-end login test → PASS
 ```
 
-**Stuck:**
+**On `stuck`:**
 ```
 ❌ STUCK
 
-Tree explored:
-  plan_a: failed — [reason]
-    └── a_s1 → a_s2a (failed), a_s2b (failed)
-  plan_b: failed — [reason]
-  plan_c: failed — [reason]
+Hypotheses tried:
+  - "JWT validation broken" — abandoned: token logic is valid, login still fails
+  - "Cookie not set" — abandoned: cookie present, but session not authenticated
 
-What was learned: [concrete findings from all failed branches]
-Suggested next steps: [user-actionable suggestions]
+What was learned: [concrete findings]
+Suggested next steps: [user-actionable]
 ```
