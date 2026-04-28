@@ -45,18 +45,19 @@ The Verifier attacks with real execution: running the command, diffing the file,
 
 ### 🌳 Running Tree
 
-A tree of hypotheses where **branching can happen at any step**, not just at the top level. When a path fails, the system backtracks to the nearest ancestor and tries a sibling branch — it does not restart from scratch.
+A tree of hypotheses, **stored as a markdown file** so Claude can read the entire tree at a glance. Branching can happen at any step — when a path fails, the system backtracks to the nearest ancestor and tries a sibling branch instead of restarting.
 
-```
-root
-├── Plan A  (hypothesis: redirect handler)
-│   └── Step 1 ── Step 2a  ✗ failed
-│             └── Step 2b  ← new branch, different approach
-├── Plan B  (hypothesis: cookie)
-└── Plan C  (hypothesis: session expiry)
+```markdown
+## plan_a — "Redirect handler is broken" [active]
+- ✅ a_s1 — reproduce login failure
+- ❌ a_s2 — patch redirect handler [retries 2/2 exhausted]
+  - 🔄 a_s2b — try middleware bypass [CURRENT]
+
+## plan_b — "Cookie handling" [untried]
+## plan_c — "Session expiry" [untried]
 ```
 
-The Orchestrator is Claude itself — it uses Claude Code's built-in planning capabilities to generate and reshape the tree. Steps are generated **lazily** — one at a time after the previous step is verified — so the tree shape is determined by what is learned, not pre-committed.
+Markdown was chosen deliberately. JSON encodes a tree as parent/children pointers — Claude has to mentally walk references to see structure. Markdown shows the tree visually, with status icons, claims, and verifier evidence inline. The Orchestrator (Claude itself, using Claude Code's built-in planning) reads and rewrites this file every iteration. Steps are generated **lazily** — one at a time after the previous step is verified — so the tree shape is determined by what is learned, not pre-committed.
 
 ---
 
@@ -82,28 +83,39 @@ FAIL + branch exhausted  →  Backtrack    walk up the tree, try from a higher n
 FAIL + plan exhausted    →  New Plan     generate a new hypothesis, informed by what failed
 ```
 
-**Example** — task: *"Users can't log in after the auth refactor"*
+**Example** — task: *"Users can't log in after the auth refactor"* — final state of `running-tree.md`:
 
-```
-root
-├── Plan A: "JWT token validation is broken"
-│   ├── Step 1: reproduce login failure          ✅ PASS
-│   ├── Step 2: inspect JWT decode logic         ✅ PASS
-│   └── Step 3: patch token expiry check         ❌ FAIL  (Verifier: login still fails in test)
-│             └── Step 3b: patch token signature ❌ FAIL  (Verifier: signature valid, not the issue)
-│                          ↑ branch exhausted → backtrack → Plan A exhausted
-│
-├── Plan B: "Session cookie is not being set"     ← new hypothesis from Plan A's failure evidence
-│   ├── Step 1: reproduce login failure          ✅ PASS
-│   ├── Step 2: trace cookie set-header in logs  ✅ PASS  (Verifier: header missing on /login)
-│   ├── Step 3: fix Set-Cookie in auth handler   ✅ PASS  (Verifier: header now present)
-│   └── Step 4: end-to-end login test            ✅ PASS  (Verifier: 200 OK + session active)
-│                                                          ↑ DONE
-│
-└── Plan C: "CORS policy blocking credentials"   ← never reached
+```markdown
+# Running Tree
+
+**Task:** Users can't log in after the auth refactor
+**Status:** done
+**Iteration:** 7
+
+## plan_b — "Session cookie is not being set" [done]
+
+- ✅ b_s1 — reproduce login failure
+  *verifier:* curl /login returns 401
+- ✅ b_s2 — trace Set-Cookie header in /login response
+  *verifier:* response has no Set-Cookie header
+- ✅ b_s3 — fix Set-Cookie in auth handler
+  *verifier:* response now contains Set-Cookie: session=...; HttpOnly
+- ✅ b_s4 — end-to-end login test
+  *verifier:* curl /login returns 200, subsequent /me returns 200 with user data
+
+## plan_c — "CORS policy blocking credentials" [untried]
+
+---
+
+## Abandoned plans
+
+- **plan_a — "JWT token validation is broken"**
+  Reason: JWT decode logic verified valid; signature also valid;
+  patches to expiry and signature both confirmed by Verifier as having
+  no effect on the actual failure. Login still 401 → JWT not the cause.
 ```
 
-Plan A's failure evidence ("token logic is valid but login still fails") directly informed Plan B's hypothesis. The tree searched where it needed to, stopped when it found a verified path, and never touched Plan C.
+Plan A's abandoned-section evidence ("decode and signature both valid; login still 401") directly informed the Orchestrator's switch to Plan B. The tree searched where it needed to, stopped when it found a verified path, and never touched Plan C.
 
 **Core principle**: don't let the agent prove itself right — let the system try to prove it wrong. Only results that survive attack are accepted, and every failure actively reshapes the search.
 
@@ -116,7 +128,7 @@ Orchestrator  (Claude itself, running the /agentforce skill,
                using Claude Code's built-in planning)
     │   plans, decides, maintains state — does NOT execute
     │
-    ├── Running Tree  (.agentforce/running-tree.json)
+    ├── Running Tree  (.agentforce/running-tree.md, plain markdown)
     │       ├── plan_a  (hypothesis 1)
     │       │     └── step_1 ── step_2a
     │       │                └── step_2b  ← branch on failure
@@ -130,7 +142,7 @@ Orchestrator  (Claude itself, running the /agentforce skill,
             └── attacks the literal claim, returns pass/fail + evidence
 ```
 
-Every loop: Orchestrator picks the current step → spawns Executor → spawns Verifier → applies retry/branch/backtrack/new-plan logic → updates Running Tree → loops. State is fully persisted between iterations.
+Every loop: Orchestrator reads the markdown tree → picks the current step → spawns Executor → spawns Verifier → rewrites the markdown with updates → loops. State is fully persisted between iterations and human-readable at any time.
 
 ---
 
@@ -192,36 +204,41 @@ Edit the cloned file to iterate — the symlink keeps it in sync globally.
 ✅ DONE
 ```
 
-**Resuming a session:** state lives in `.agentforce/running-tree.json`. Run `/agentforce` again to continue.
+**Resuming a session:** state lives in `.agentforce/running-tree.md`. Run `/agentforce` again to continue.
 
 ---
 
 ## State File
 
-Inspect the Running Tree at any time:
+Inspect the Running Tree at any time — it's just markdown:
 
 ```bash
-cat .agentforce/running-tree.json
+cat .agentforce/running-tree.md
 ```
 
-```json
-{
-  "task": "Fix the failing test in auth.py",
-  "status": "executing",
-  "current_node": "a_s2b",
-  "nodes": {
-    "root": { "children": ["plan_a", "plan_b", "plan_c"], "tried": [] },
-    "plan_a": { "hypothesis": "cookie handling is broken", "status": "active" },
-    "a_s1": {
-      "status": "passed",
-      "executor_claim": "curl /login returns 401",
-      "verifier_evidence": "confirmed via curl -i"
-    },
-    "a_s2a": { "status": "failed", "failure_reason": "test still red after patch" },
-    "a_s2b": { "status": "pending", "retry_count": 0 }
-  }
-}
+```markdown
+# Running Tree
+
+**Task:** Fix the failing test in auth.py
+**Status:** executing
+**Current:** a_s2b
+**Iteration:** 4
+
+## plan_a — "Cookie handling is broken" [active]
+
+- ✅ a_s1 — reproduce login failure
+  *claim:* curl /login returns 401
+  *verifier:* confirmed via curl -i, status code 401
+- ❌ a_s2 — patch redirect handler [retries 2/2 exhausted]
+  *failure:* test still red after patch
+  - 🔄 a_s2b — try Set-Cookie header in auth handler [CURRENT]
+    *retry:* 0/2
+
+## plan_b — "Session expiry mismatch" [untried]
+## plan_c — "CORS blocking credentials" [untried]
 ```
+
+The whole file is human-readable — you can follow exactly what the agent has tried, what worked, what failed, and where it is now.
 
 ---
 
@@ -250,7 +267,7 @@ AgentForce/
 At runtime, the working directory gets:
 ```
 .agentforce/
-└── running-tree.json        ← live state: long_term + history + near_future
+└── running-tree.md          ← live state: tree of plans, steps, claims, evidence
 ```
 
 ---
@@ -260,9 +277,10 @@ At runtime, the working directory gets:
 1. **Verifier has no task context** — it only verifies a literal factual claim
 2. **Executor must produce checkable claims** — "the bug is fixed" is rejected; "`pytest` exits 0 with N passed" is accepted
 3. **Orchestrator does not execute** — it plans (using Claude Code's built-in planning), decides, and writes state; all concrete actions go through sub-agents
-4. **State writes happen every iteration** — Running Tree is always inspectable and resumable
-5. **Failed plans carry evidence** — failure reasons from the Verifier become negative examples when generating new plans
-6. **Resource ceilings** — `max_retry_per_step: 2`, `max_branches_per_node: 3`, `max_plans: 5`
+4. **State is markdown, not JSON** — Running Tree is human-readable, the tree shape is visible at a glance, and Claude reads it without parsing pointers
+5. **State writes happen every iteration** — Running Tree is always inspectable and resumable
+6. **Failed plans carry evidence** — failure reasons from the Verifier become negative examples when generating new plans
+7. **Resource ceilings** — `max_retry_per_step: 2`, `max_branches_per_node: 3`, `max_plans: 5`
 
 ---
 
