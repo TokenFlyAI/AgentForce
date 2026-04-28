@@ -6,6 +6,24 @@ The Orchestrator (Claude itself, using Claude Code's built-in planning) maintain
 
 ---
 
+## Try It Now
+
+Install in one command:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/TokenFlyAI/AgentForce/main/install.sh | bash
+```
+
+Then in any Claude Code project:
+
+```
+/agentforce <your task>
+```
+
+Re-run the install command any time to update. See [Installation](#installation) for alternative install paths.
+
+---
+
 ## The Problem
 
 Standard AI agents have a fundamental flaw: they generate answers and declare success themselves.
