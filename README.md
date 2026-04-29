@@ -139,6 +139,24 @@ Plan A's abandoned-section evidence ("decode and signature both valid; login sti
 
 ---
 
+## Live Planning vs Durable Record
+
+AgentForce uses **two surfaces** for state, separated by purpose:
+
+| | TaskList (Claude Code built-in) | running-tree.md (custom) |
+|---|---|---|
+| **Role** | Live planning — what's `in_progress` now | Durable record — verified history + tree shape |
+| **Audience** | User sees in Claude Code's task UI | Inspect on disk, persists across sessions |
+| **Lifecycle** | Per-session; rebuilt from running-tree.md on resume | Persistent; source of truth |
+| **Status flow** | `pending → in_progress → completed` | history-only (`✅`/`❌` frozen once written) |
+| **Granularity** | The current step | All steps that ever ran, claims, evidence, branches, abandoned plans, live processes |
+
+The Orchestrator uses `TaskCreate` / `TaskUpdate` (with `owner: "agentforce"`) for live planning. **Exactly one** AgentForce task is `in_progress` at any time — that IS the current step. After Verifier passes, the task becomes `completed` and the step moves into the running-tree.md as part of the verified history; a new task is created for the next step.
+
+This means: as a user, you can watch the live spinner in Claude Code's task UI without parsing markdown, and the running-tree.md captures the full evidence trail you can audit later.
+
+---
+
 ## Anti-Drift: The Protocol File
 
 After many iterations, the Orchestrator's context grows. The strict rules ("MUST spawn Verifier for every step", "no PASS without evidence") sit far back in context and can drift — the model may start skipping the Verifier or self-certifying near the end of a long task.
@@ -354,14 +372,15 @@ At runtime, the working directory gets:
 
 1. **Verifier has no task context** — it only verifies a literal factual claim
 2. **Executor must produce checkable claims** — "the bug is fixed" is rejected; "`pytest` exits 0 with N passed" is accepted
-3. **Orchestrator does not execute** — it plans (using Claude Code's built-in planning), decides, and writes state; all concrete actions go through sub-agents
-4. **Two Agent() calls per step, every step** — Executor + Verifier; enforced by self-check before any state.md write
-5. **Final verification gate before done** — the most common drift point is the finish line; one final adversarial Verifier on the overall outcome blocks the shortcut
-6. **Protocol re-read every iteration** — `.agentforce/protocol.md` is read fresh in Phase 0, immune to context compaction
-7. **State is markdown, not JSON** — Running Tree is human-readable, the tree shape is visible at a glance
-8. **Persistent processes survive sub-agent boundaries** — `setsid` + manifest at `.agentforce/processes/<name>.json`; per-command decision (one-shot vs persistent)
-9. **Failed plans carry evidence** — failure reasons from the Verifier become negative examples when generating new plans
-10. **Resource ceilings** — `max_retry_per_step: 2`, `max_branches_per_node: 3`, `max_plans: 5`
+3. **Orchestrator does not execute** — it plans (using Claude Code's built-in TaskList + reasoning), decides, and writes state; all concrete actions go through sub-agents
+4. **Live planning via built-in TaskList** — `TaskCreate` / `TaskUpdate` (owner: "agentforce") for the current step; exactly one task `in_progress` at any time
+5. **Durable record via running-tree.md** — append-only verified history, branching tree, abandoned plans, live processes
+6. **Two Agent() calls per step, every step** — Executor + Verifier; enforced by self-check before any state write
+7. **Final verification gate before done** — the most common drift point is the finish line; one final adversarial Verifier on the overall outcome blocks the shortcut
+8. **Protocol re-read every iteration** — `.agentforce/protocol.md` is read fresh in Phase 0, immune to context compaction
+9. **Persistent processes survive sub-agent boundaries** — `setsid` + manifest at `.agentforce/processes/<name>.json`; per-command decision (one-shot vs persistent)
+10. **Failed plans carry evidence** — failure reasons from the Verifier become negative examples when generating new plans
+11. **Resource ceilings** — `max_retry_per_step: 2`, `max_branches_per_node: 3`, `max_plans: 5`
 
 ---
 
