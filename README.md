@@ -139,6 +139,47 @@ Plan A's abandoned-section evidence ("decode and signature both valid; login sti
 
 ---
 
+## Anti-Drift: The Protocol File
+
+After many iterations, the Orchestrator's context grows. The strict rules ("MUST spawn Verifier for every step", "no PASS without evidence") sit far back in context and can drift — the model may start skipping the Verifier or self-certifying near the end of a long task.
+
+**Defense:** the critical rules live in a separate file (`.agentforce/protocol.md`) that the Orchestrator **re-reads at the start of every iteration**. Even if the conversation context is compacted, a fresh file read restores the rules verbatim.
+
+```
+Phase 0 (every iteration):  read .agentforce/protocol.md
+Phase 1 (first iteration):  write protocol.md alongside running-tree.md
+Phase 6 (before done):      run a final adversarial Verifier on the overall outcome
+```
+
+The protocol explicitly anticipates the failure modes ("forbidden drift modes") and forces a self-check before any state.md write: did I spawn an Executor *and* a Verifier this iteration via `Agent()` calls?
+
+---
+
+## Persistent Processes
+
+Some steps need to start things that **must outlive the iteration that started them** — a game server you'll iterate on, a watcher, a daemon. By default, processes started inside a sub-agent are tied to that sub-agent's lifecycle and get killed when it ends. AgentForce handles this with two patterns:
+
+| Pattern | When | How |
+|---|---|---|
+| **One-shot** (default) | Tests, builds, file ops, scripts that run-then-exit | Plain `Bash` |
+| **Persistent** | Servers, daemons, watchers that must outlive the iteration | `setsid nohup ... &; disown` + manifest at `.agentforce/processes/<name>.json` |
+
+The Executor decides **per-command**, not per-run. Within one `/agentforce` invocation iter 3 might use the persistent pattern to start a server, iter 4 might use the one-shot pattern to curl the server, iter 5 might one-shot a test, iter 7 might persist a worker.
+
+Persistent processes survive the Executor sub-agent, the Orchestrator, and the entire `/agentforce` run. A future `/agentforce` invocation reads `.agentforce/processes/*.json`, verifies the PIDs are still alive, and surfaces them in the "Live processes" header of running-tree.md so the next Executor knows what's already running.
+
+```
+.agentforce/
+├── protocol.md                      ← anti-drift rules (re-read each iter)
+├── running-tree.md                  ← the tree + Live processes header
+└── processes/
+    ├── game-server.json             ← manifest (pid, port, log, purpose)
+    ├── game-server.pid
+    └── game-server.log              ← detached stdout/stderr
+```
+
+---
+
 ## How It Runs
 
 ```
@@ -247,26 +288,30 @@ cat .agentforce/running-tree.md
 ```markdown
 # Running Tree
 
-**Task:** Fix the failing test in auth.py
+**Task:** Build and verify a multiplayer game server
 **Status:** executing
-**Current:** a_s2b
-**Iteration:** 4
+**Current:** a_s4
+**Iteration:** 5
 
-## plan_a — "Cookie handling is broken" [active]
+## Live processes
+- 🟢 **game-server** (pid 12345, port 3199) — started iter 3, log: .agentforce/processes/game-server.log
 
-- ✅ a_s1 — reproduce login failure
-  *claim:* curl /login returns 401
-  *verifier:* confirmed via curl -i, status code 401
-- ❌ a_s2 — patch redirect handler [retries 2/2 exhausted]
-  *failure:* test still red after patch
-  - 🔄 a_s2b — try Set-Cookie header in auth handler [CURRENT]
-    *retry:* 0/2
+## plan_a — "Build with Node + ws" [active]
 
-## plan_b — "Session expiry mismatch" [untried]
-## plan_c — "CORS blocking credentials" [untried]
+- ✅ a_s1 — scaffold project
+  *claim:* package.json contains ws@^8 dependency
+  *verifier:* confirmed via cat
+- ✅ a_s2 — implement game.js
+  *claim:* file game.js exists with ~120 lines
+  *verifier:* confirmed via wc -l
+- ✅ a_s3 — start server (Pattern 2 persistent process)
+  *claim:* pid 12345 listening on port 3199
+  *verifier:* confirmed via kill -0 and curl
+- 🔄 a_s4 — connect two test clients [CURRENT]
+  *retry:* 0/2
 ```
 
-The whole file is human-readable — you can follow exactly what the agent has tried, what worked, what failed, and where it is now.
+The whole file is human-readable — you can follow exactly what the agent has tried, what worked, what failed, what processes are still alive, and where it is now.
 
 ---
 
@@ -295,7 +340,12 @@ AgentForce/
 At runtime, the working directory gets:
 ```
 .agentforce/
-└── running-tree.md          ← live state: tree of plans, steps, claims, evidence
+├── protocol.md              ← anti-drift rules, re-read every iteration
+├── running-tree.md          ← live state: tree, claims, evidence, live processes
+└── processes/               ← persistent process manifests + logs (if any)
+    ├── <name>.json
+    ├── <name>.pid
+    └── <name>.log
 ```
 
 ---
@@ -305,10 +355,13 @@ At runtime, the working directory gets:
 1. **Verifier has no task context** — it only verifies a literal factual claim
 2. **Executor must produce checkable claims** — "the bug is fixed" is rejected; "`pytest` exits 0 with N passed" is accepted
 3. **Orchestrator does not execute** — it plans (using Claude Code's built-in planning), decides, and writes state; all concrete actions go through sub-agents
-4. **State is markdown, not JSON** — Running Tree is human-readable, the tree shape is visible at a glance, and Claude reads it without parsing pointers
-5. **State writes happen every iteration** — Running Tree is always inspectable and resumable
-6. **Failed plans carry evidence** — failure reasons from the Verifier become negative examples when generating new plans
-7. **Resource ceilings** — `max_retry_per_step: 2`, `max_branches_per_node: 3`, `max_plans: 5`
+4. **Two Agent() calls per step, every step** — Executor + Verifier; enforced by self-check before any state.md write
+5. **Final verification gate before done** — the most common drift point is the finish line; one final adversarial Verifier on the overall outcome blocks the shortcut
+6. **Protocol re-read every iteration** — `.agentforce/protocol.md` is read fresh in Phase 0, immune to context compaction
+7. **State is markdown, not JSON** — Running Tree is human-readable, the tree shape is visible at a glance
+8. **Persistent processes survive sub-agent boundaries** — `setsid` + manifest at `.agentforce/processes/<name>.json`; per-command decision (one-shot vs persistent)
+9. **Failed plans carry evidence** — failure reasons from the Verifier become negative examples when generating new plans
+10. **Resource ceilings** — `max_retry_per_step: 2`, `max_branches_per_node: 3`, `max_plans: 5`
 
 ---
 
