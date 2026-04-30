@@ -79,6 +79,11 @@ Markdown was chosen deliberately. JSON encodes a tree as parent/children pointer
 
 ---
 
+> **🧠 Plus one more (additional, not essential): the Thinker.**
+> Every 10 iterations, AgentForce spawns a third sub-agent — the Thinker — for first-principles review. Unlike the Executor/Verifier pair (which run every step and are non-negotiable), the Thinker is **advisory and periodic**: it reads the full history, suggests pivots and out-of-box angles, and drafts roadmap items aligned to the goals. The Orchestrator may incorporate, defer, or dismiss. Details below in [The Thinker](#the-thinker--periodic-first-principles-review).
+
+---
+
 ## The Idea
 
 Transform agents from "answer generators" into "search systems":
