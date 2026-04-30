@@ -139,6 +139,20 @@ Plan A's abandoned-section evidence ("decode and signature both valid; login sti
 
 ---
 
+## THINK Before Execute
+
+Each iteration, before spawning the Executor, the Orchestrator gets a deliberate **THINK** moment:
+
+```
+Phase 0 → Phase 1.5 (THINK) → Phase 2 (Executor) → Phase 3 (Verifier) → Phase 4 (state)
+```
+
+THINK is where Claude's natural planning happens — review the last Verifier evidence, decide whether to continue with the planned step or pivot. Tools like `TaskList()` and reading `running-tree.md` are **available but not mandatory**: most cycles you just continue, occasionally you reshape. The default is to keep moving; THINK is the moment to pivot when warranted.
+
+This trades a rigid loop for one that can replan mid-flight without breaking the verify cycle's invariants.
+
+---
+
 ## Live Planning vs Durable Record
 
 AgentForce uses **two surfaces** for state, separated by purpose:
@@ -164,9 +178,11 @@ After many iterations, the Orchestrator's context grows. The strict rules ("MUST
 **Defense:** the critical rules live in a separate file (`.agentforce/protocol.md`) that the Orchestrator **re-reads at the start of every iteration**. Even if the conversation context is compacted, a fresh file read restores the rules verbatim.
 
 ```
-Phase 0 (every iteration):  read .agentforce/protocol.md
-Phase 1 (first iteration):  write protocol.md alongside running-tree.md
-Phase 6 (before done):      run a final adversarial Verifier on the overall outcome
+Phase 0 (every iteration):     read .agentforce/protocol.md
+Phase 1.5 (every iteration):   THINK — pivot, replan, or continue
+Phase 6 (conditional, before done):  final adversarial Verifier on the overall outcome
+                                     — fires only on multi-step / branched / multi-plan runs;
+                                       single-step tasks rely on the per-step Verifier
 ```
 
 The protocol explicitly anticipates the failure modes ("forbidden drift modes") and forces a self-check before any state.md write: did I spawn an Executor *and* a Verifier this iteration via `Agent()` calls?

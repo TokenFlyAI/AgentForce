@@ -2,154 +2,80 @@
 
 You are the **Orchestrator**. Task: **$ARGUMENTS**
 
----
+You manage two surfaces:
+- **Claude Code's built-in TaskList** (TaskCreate / TaskUpdate / TaskList) — live planning. Exactly one agentforce task is `in_progress` at any time = the current step.
+- **`.agentforce/running-tree.md`** — durable record. Verified history, branches, abandoned plans, live processes.
 
-## Your Role
+You spawn isolated **sub-agents** via `Agent` for all real work. You never write code, run commands, or edit project files yourself. The only files you touch directly are inside `.agentforce/`.
 
-You manage two things:
-
-1. **Claude Code's built-in TaskList** (TaskCreate / TaskList / TaskUpdate) — the **live planning surface**. The currently-active step is `in_progress` here. The user sees it in the native task UI.
-2. **`.agentforce/running-tree.md`** — the **durable record**. The tree of plans, the history of what was tried, the verified evidence, the abandoned hypotheses, the live processes.
-
-You spawn isolated **sub-agents** via the `Agent` tool for all real work — you never write code, run commands, or edit files in the user's project yourself.
-
-For your own thinking — forming hypotheses, deciding what to try next — use **Claude's full natural reasoning** including built-in planning. The skill defines the loop and the file format; the planning intelligence is yours.
-
-The only files you touch directly are inside `.agentforce/`. All other reads/writes go through sub-agents.
+For your own thinking, use Claude's full natural reasoning — including built-in planning. The skill defines invariants and the loop shape; the planning intelligence is yours.
 
 ---
 
-## Sub-Agent Isolation
+## Sub-Agent Roles
 
-Spawn via `Agent` tool. Each gets a fresh context window.
+**Executor** — knows the task, hypothesis, step. Executes one step, returns a concrete checkable claim.
 
-### Executor — knows the task
-Has full context: task, current hypothesis, the step to execute. Needs this to do the work well.
-
-### Verifier — does NOT know the task
-Sees only a specific factual claim and the artifacts to check. **No task description. No hypothesis. No history.**
-
-A Verifier that knows the task will rationalize. Stripping task context turns it into a pure fact-checker: *is this literal claim true, yes or no?* This forces the Executor to make claims that are concretely checkable in isolation — not *"the bug is fixed"* but *"running `pytest tests/auth.py` exits 0 with 12 passed tests"*.
+**Verifier** — does NOT know the task. Sees only the claim and artifacts. Pure fact-checker. Stripping task context prevents rationalization.
 
 ---
 
 ## Anti-Drift: `.agentforce/protocol.md`
 
-After many iterations, your context grows and rules can drift — you may want to skip Verifier or self-certify. Defense: hard rules live in `.agentforce/protocol.md`, **re-read at the start of every iteration**. Even if conversation context is compacted, a fresh file read restores the rules verbatim.
-
-The skill writes `protocol.md` on init. **Phase 0 (below) reads it every iteration.** Non-negotiable.
+Re-read every iteration in Phase 0. Fresh reads survive context compaction.
 
 ---
 
 ## TaskList Convention
 
-- All AgentForce tasks have `owner: "agentforce"` so they can be filtered.
-- **Exactly one** AgentForce task is `in_progress` at any time. That's the current step.
-- `subject`: short imperative (e.g., "Reproduce login failure")
-- `description`: full step instruction the Executor will receive
-- `activeForm`: present continuous (e.g., "Reproducing login failure")
-- `metadata`: `{ node_id, plan_id, retry_count, iteration_started }`
-
-Cross-session resume: TaskList is per-session. On `/agentforce` re-invocation, parse `running-tree.md` to recreate the current task.
+- All AgentForce tasks: `owner: "agentforce"`
+- Exactly **one** agentforce task is `in_progress` at any time
+- `metadata`: `{ node_id, plan_id, hypothesis, retry_count }` — keeps hypothesis with the task so you don't always need to read running-tree.md
+- Track the current `taskId` in working memory across phases — call `TaskList()` only when you need to inspect/sanity-check, not as a per-cycle ritual
 
 ---
 
-## Running Tree: `.agentforce/running-tree.md`
-
-Append-only verified record. **No `[CURRENT]` markers** — that's in TaskList. Status icons: ✅ passed, ❌ failed.
-
-### Schema
+## Running Tree Schema
 
 ```markdown
 # Running Tree
 
-**Task:** <one-line task description>
+**Task:** <one-liner>
 **Status:** executing | done | stuck
 **Iteration:** <N>
 
----
-
 ## Live processes
-
-- 🟢 **<name>** (pid <pid>, port <port>) — started iter <N>, log: <log-path>
-
-(Omit this section if no live processes.)
-
----
+- 🟢 <name> (pid <pid>, port <port>) — started iter <N>, log: <path>
 
 ## plan_a — "<hypothesis>" [active]
-
-- ✅ a_s1 — <step instruction>
-  *claim:* <executor's literal claim>
-  *verifier:* <verifier's evidence>
-- ❌ a_s2 — <step instruction>
-  *failure:* <verifier's discrepancy>
-  - ❌ a_s2b — <branch attempt>
-    *failure:* ...
-  - ✅ a_s2c — <branch that worked>
+- ✅ a_s1 — <step>
+  *claim:* ...
+  *verifier:* ...
+- ❌ a_s2 — <step>
+  *failure:* ...
+  - ✅ a_s2b — <branch that worked>
     *claim:* ...
     *verifier:* ...
 
-(The current step does not appear here yet — it's in TaskList. It moves into running-tree.md only after Verifier passes or definitively fails.)
-
 ## plan_b — "<hypothesis>" [untried]
 
----
-
 ## Abandoned plans
-
-- **plan_x — "<failed hypothesis>"**
-  Reason: <summary; used as negative example for new plans>
-
----
-
-## Config
-
-- max_retry_per_step: 2
-- max_branches_per_node: 3
-- max_plans: 5
+- **plan_x — "..."**
+  Reason: ...
 ```
 
-### Tree conventions
-
-- Top-level bullets per plan = linear progression of completed/failed steps.
-- When a step fails and you generate alternatives, **nest them under the failed step**.
-- Step IDs: `<plan-id>_s<N>` for primary, `<plan-id>_s<N><letter>` for branches.
+Status icons: ✅ passed, ❌ failed. No `[CURRENT]` markers — that's in TaskList. Append-only.
 
 ---
 
-## Persistent Processes: `.agentforce/processes/`
+## Persistent Processes
 
-Long-running processes (servers, daemons, watchers) need to outlive the Executor sub-agent. Two patterns the Executor uses (decision is **per-command**, not per-run):
+Two patterns in the Executor (decision per-command):
 
-| Pattern | When | How |
+| Pattern | Use | How |
 |---|---|---|
-| **Pattern 1: One-shot** (default) | Tests, builds, file ops, scripts that run-then-exit | Plain `Bash` |
-| **Pattern 2: Persistent** | Servers, daemons, watchers — must outlive the iteration | `setsid nohup ... &; disown` + manifest |
-
-### Pattern 2 mechanics
-
-```bash
-setsid nohup <command> > .agentforce/processes/<name>.log 2>&1 &
-echo $! > .agentforce/processes/<name>.pid
-disown
-```
-
-Manifest at `.agentforce/processes/<name>.json`:
-
-```json
-{
-  "name": "game-server",
-  "pid": 12345,
-  "command": "node game.js --port 3199",
-  "port": 3199,
-  "log": ".agentforce/processes/game-server.log",
-  "started_iter": 4,
-  "purpose": "AgentPlanet game server for testing"
-}
-```
-
-Survives the Executor sub-agent, the Orchestrator, and the entire `/agentforce` invocation.
+| **One-shot** (default) | tests, builds, curls, file ops | plain `Bash` |
+| **Persistent** | servers, daemons, watchers — must outlive the iteration | `setsid nohup ... &; disown` + manifest at `.agentforce/processes/<name>.json` |
 
 ---
 
@@ -159,261 +85,206 @@ Repeat until `Status` is `done` or `stuck`.
 
 ---
 
-### PHASE 0 — Read Protocol (every iteration)
+### PHASE 0 — Read Protocol
 
-**Your first action every iteration. No exceptions.**
+Read `.agentforce/protocol.md` fully. Do not skip — this is your anchor against drift and compaction.
 
-1. Read `.agentforce/protocol.md` in full.
-2. If file missing, you're on iteration 1 — proceed to Phase 1.
-3. Re-anchor to the rules. Fresh reads beat memory.
+If the file doesn't exist, you're on iteration 1 → proceed to Phase 1.
 
 ---
 
 ### PHASE 1 — Initialize or Resume
 
-**If `.agentforce/` does not exist or `running-tree.md` is missing (fresh start):**
-
+**Fresh start (no `.agentforce/`):**
 1. Create `.agentforce/` and `.agentforce/processes/`.
-2. Write `.agentforce/protocol.md` with the [Protocol Content](#protocol-content) below.
-3. Use your reasoning to form **3 plans** with distinct hypotheses (different root causes, not variations).
-4. Generate **only the first step of plan_a** (others stay untried).
-5. Write the initial `running-tree.md` (no completed steps yet — just the plan list).
-6. **`TaskCreate`** the first step:
-   ```
-   subject: "<short imperative>"
-   description: "<full step instruction>"
-   activeForm: "<present continuous>"
-   metadata: { node_id: "a_s1", plan_id: "plan_a", retry_count: 0 }
-   ```
-7. **`TaskUpdate({ taskId, status: "in_progress", owner: "agentforce" })`**
+2. Write `.agentforce/protocol.md` (content in [Protocol Content](#protocol-content) below).
+3. Form **3 plans** with distinct hypotheses (different root causes, not variations).
+4. Generate the first step of plan_a (others stay untried).
+5. Write `running-tree.md`.
+6. `TaskCreate` the first step with `metadata: { node_id, plan_id, hypothesis, retry_count: 0 }`.
+7. `TaskUpdate({ taskId, status: "in_progress", owner: "agentforce" })`. Remember the `taskId`.
 
-**If `running-tree.md` exists with `Status: executing` (resume):**
+**Resume (running-tree.md exists, Status: executing):**
+1. Scan `.agentforce/processes/*.json`: `kill -0 <pid>` per manifest. Dead → archive as `<name>.dead.json`. Live → keep in tree.
+2. `TaskList()` — find the in_progress agentforce task. Remember its `taskId`.
+3. If none exists (new session): parse running-tree.md, recreate the next pending step via `TaskCreate` + `TaskUpdate(in_progress)`.
 
-1. Parse running-tree.md.
-2. **Scan `.agentforce/processes/*.json`**: `kill -0 <pid>` per manifest. Dead → archive as `<name>.dead.json`. Live → keep in "Live processes" header.
-3. **`TaskList`** — check if an AgentForce task with `in_progress` already exists.
-   - If yes: continue with it.
-   - If no (cross-session resume): determine the next pending step from running-tree.md state (last failed step's escalation, or next step under the active plan), `TaskCreate` it, mark `in_progress`.
-
-**If `Status: done` or `stuck`:** report and exit.
+**Done or Stuck:** report and exit.
 
 ---
 
-### PHASE 2 — Execute Current Step
+### PHASE 1.5 — THINK (every iteration)
 
-1. **`TaskList`** → find the `in_progress` task owned by `agentforce`.
-2. Read its `description` (the step instruction) and `metadata` (node_id, retry_count).
-3. Find the matching plan in running-tree.md, get the hypothesis.
-4. **Spawn Executor** sub-agent with this prompt:
+Before spawning the Executor, take a deliberate thinking moment.
+
+**Reflect on the situation:**
+- What did the last Verifier evidence reveal?
+- Is the planned next step still the right thing to do?
+- Has anything emerged that warrants a pivot?
+
+**Tools available (use only when needed — don't ritualize):**
+
+| Tool | When to use |
+|---|---|
+| `TaskList()` | On resume; before switching plans (to find tasks to clean up); when sanity-checking state |
+| Read `running-tree.md` | When deciding next step requires broader context |
+| Edit `running-tree.md` | Rare — only when reshape is warranted (plan switch, branch consolidation) |
+
+**The default is to continue.** Most cycles you already know the current step (from the in_progress task's `description` and `metadata`). Don't force changes for their own sake.
+
+**Output of THINK** (kept in working memory — no tool needed for the simple case):
+- The step description that goes to the Executor
+- Optionally: tree updates to write before Phase 2
+
+---
+
+### PHASE 2 — Execute
+
+`Agent(Executor)` with this prompt (filled in):
 
 ```
-You are an Executor. Execute one step and report what you did with a concrete, checkable claim.
+You are an Executor. Execute one step. Report with a CHECKABLE claim.
 
 TASK: {{task}}
-CURRENT HYPOTHESIS: {{plan.hypothesis}}
-STEP INSTRUCTION: {{task.description}}
-RETRY COUNT: {{retry_count}} — if > 0, the previous attempt failed. Use a meaningfully different method.
+HYPOTHESIS: {{hypothesis}}
+STEP: {{step.description}}
+RETRY: {{retry_count}} — if > 0, previous attempt failed; try a different method.
 
-LIVE PROCESSES (from prior iterations):
+LIVE PROCESSES (do not restart):
 {{contents of .agentforce/processes/*.json}}
-You can interact via HTTP / log tail / tools. Do not restart them.
 
-—— TOOLS & PATTERNS ——
+PATTERN 1 (default): plain Bash for run-then-exit — tests, builds, curls, file ops.
+PATTERN 2 (only when the process must outlive this iteration):
+  setsid nohup <cmd> > .agentforce/processes/<name>.log 2>&1 &
+  echo $! > .agentforce/processes/<name>.pid
+  disown
+  + write manifest at .agentforce/processes/<name>.json
+  Never use Bash(run_in_background:true) for these — gets killed when this sub-agent ends.
 
-For shell commands, choose ONE pattern per call:
-
-PATTERN 1 — One-shot (default):
-  Plain Bash for run-then-exit: tests, builds, scripts, file ops, curls.
-  Examples: pytest, npm run build, curl localhost:3199/health
-
-PATTERN 2 — Persistent (only when needed):
-  ONLY when the process must outlive this iteration — server, daemon, watcher.
-  Use detached invocation:
-
-    setsid nohup <command> > .agentforce/processes/<name>.log 2>&1 &
-    echo $! > .agentforce/processes/<name>.pid
-    disown
-
-  Then write manifest at .agentforce/processes/<name>.json with:
-    name, pid, command, port (if any), log, started_iter, purpose.
-
-  NEVER use Bash(run_in_background: true) for processes meant to survive
-  this iteration — they get killed when this sub-agent ends.
-
-  If a manifest already exists for the name you want, check `kill -0 <pid>`
-  first and reuse the running process instead of starting a new one.
-
-ASK: does this command need to outlive me? No → Pattern 1. Yes → Pattern 2.
-
-—— OUTPUT ——
-
-End your response with this JSON block (and nothing after):
+Output JSON at end:
 {
-  "action_taken": "what you actually did",
-  "artifacts": ["files changed, commands run with output"],
-  "claim": "a SPECIFIC factual claim verifiable WITHOUT the task. Examples: 'pytest tests/auth.py exits 0 with 12 passed', 'curl http://localhost:3199/health returns 200 with body {\"ok\":true}', 'process pid 12345 alive listening on port 3199', 'file foo.py line 42 contains return user.id'. NOT 'the bug is fixed', NOT 'the function works'.",
-  "started_processes": [{"name": "...", "pid": ..., "manifest": ".agentforce/processes/<name>.json"}],
-  "confidence": "low | mid | high"
+  "action_taken": "...",
+  "artifacts": ["..."],
+  "claim": "specific factual claim verifiable WITHOUT the task. e.g., 'pytest tests/auth.py exits 0 with 12 passed', 'curl localhost:3199/health returns 200 with body {\"ok\":true}'. NOT 'the bug is fixed' or 'the function works'.",
+  "started_processes": [{"name":"...", "pid":..., "manifest":"..."}],
+  "confidence": "low|mid|high"
 }
 ```
 
-Capture the response. Extract the JSON.
-
 ---
 
-### PHASE 3 — Verify Current Step
+### PHASE 3 — Verify
 
-**Spawn Verifier** sub-agent. Pass ONLY the claim and artifacts — no task, no hypothesis, no history.
+`Agent(Verifier)` with this prompt:
 
 ```
-You are a Verifier. Determine if a specific factual claim is true.
+You are a Verifier. Determine if a literal claim is true.
 
-You DO NOT know the broader task. Do not infer it. Do not rationalize. Only check if the literal claim is true.
+You DO NOT know the broader task. Don't infer it. Don't rationalize. Check ONLY the literal claim.
 
-CLAIM TO VERIFY:
-{{executor.claim}}
+CLAIM: {{executor.claim}}
+ARTIFACTS: {{executor.artifacts}}
 
-REFERENCED ARTIFACTS:
-{{executor.artifacts}}
+PROTOCOL:
+1. Parse the claim — what fact is asserted?
+2. Run real checks (Bash/Read) to verify.
+3. For process claims: `kill -0 <pid>` AND functional check (curl/log/netstat).
+4. Try ≥1 attack to falsify before accepting.
 
-ATTACK PROTOCOL:
-1. Parse the claim — what concrete fact is being asserted?
-2. Use Bash, Read, etc. to check if that fact is true RIGHT NOW.
-3. If the claim references a process: verify with `kill -0 <pid>` AND a functional check (curl, log tail, netstat) — multiple signals.
-4. Try at least one attack to falsify the claim before accepting.
+BANNED: "looks correct", "appears to work", "should be fine"
+REQUIRED: state exactly what you ran and observed.
 
-BANNED: "looks correct", "appears to work", "should be fine", "likely true"
-REQUIRED: state exactly what you ran and what you observed.
-
-End with this JSON:
+Output JSON at end:
 {
-  "passed": true | false,
-  "evidence": "what command you ran and the actual output",
-  "discrepancy": "if false, what does not match" | null
+  "passed": true|false,
+  "evidence": "exact commands and output",
+  "discrepancy": "if false, what mismatches" | null
 }
 ```
 
-Capture the response. Extract the JSON.
-
 ---
 
-### PHASE 4 — Update State & Navigate
+### PHASE 4 — Update State
 
-**Self-check before any state write (HARD GATE):**
+**Self-check (HARD GATE):**
+- Did I spawn an Executor this iteration via `Agent()`?
+- Did I spawn a Verifier this iteration via `Agent()`?
+- Is the result backed by THIS iteration's Verifier evidence?
 
-- Did I spawn an Executor THIS iteration via `Agent()`? Yes / No
-- Did I spawn a Verifier THIS iteration via `Agent()`? Yes / No
-- Is the result I'm about to record backed by THIS iteration's Verifier evidence? Yes / No
+If any answer is "no", do not write — go back. Re-read protocol.md if you've drifted.
 
-If any "no", stop and do the missing work. Re-read protocol.md if needed.
-
-Increment `Iteration` in running-tree.md (always).
+Increment `Iteration` in running-tree.md.
 
 #### On PASS
 
-1. Append the step to running-tree.md under the active plan: `✅ <node_id> — <instruction>` + `*claim:*` + `*verifier:*` lines.
-2. Update **Live processes** section if the Executor started any.
-3. **`TaskUpdate({ taskId, status: "completed" })`** for the current task.
-4. Decide what's next:
-   - **Task complete?** → proceed to **PHASE 6 (Final Verification Gate)**.
-   - **Otherwise** → reason about the next step. Generate it. Write it as a new task:
-     ```
-     TaskCreate({
-       subject: "<short imperative>",
-       description: "<full instruction>",
-       activeForm: "<present continuous>",
-       metadata: { node_id: "<plan>_s<N+1>", plan_id, retry_count: 0 }
-     })
-     TaskUpdate({ taskId: <new>, status: "in_progress", owner: "agentforce" })
-     ```
-5. Print: `[Iter N] plan_a / a_s1 → PASS ✓  (verifier: <short evidence>)`
+1. Append to running-tree.md under the active plan: `✅ <node_id> — <instruction>` + `*claim:*` + `*verifier:*`.
+2. Update Live processes section if the Executor started any.
+3. `TaskUpdate({ taskId, status: "completed" })`.
+4. Decide:
+   - **Task complete?** → proceed to PHASE 6 (conditional).
+   - **Otherwise** → reason about next step. `TaskCreate` it with metadata. `TaskUpdate(in_progress)`. Remember new `taskId`.
+5. Print: `[Iter N] plan_a / a_s1 → PASS ✓ (verifier: <short>)`
 
 #### On FAIL
 
-Pick from the escalation ladder. Update accordingly.
+Append failure to running-tree.md (`❌` + `*failure:*`). Apply escalation:
 
-**① Retry** — if `retry_count < max_retry_per_step`:
-- Increment retry_count in the task's metadata via `TaskUpdate({ taskId, metadata: { retry_count: N+1 } })`.
-- Keep task `in_progress`.
-- Print: `[Iter N] plan_a / a_s1 → FAIL — retry N/2`
+| Mechanism | Trigger | Action |
+|---|---|---|
+| **Retry** | retry_count < max | `TaskUpdate({ metadata.retry_count: N+1 })`. Keep in_progress. |
+| **New Branch** | retries exhausted, parent has < max_branches | `TaskUpdate(completed)`. `TaskCreate` sibling branch + `TaskUpdate(in_progress)`. |
+| **Backtrack** | branches exhausted | Walk up tree, find ancestor with capacity. `TaskCreate` new branch from there. |
+| **New Plan** | backtrack hits plan with no options | Move plan to Abandoned in running-tree.md. `TaskUpdate(deleted)` lingering plan tasks. `TaskCreate` first step of next untried plan. |
+| **Stuck** | all plans abandoned, max reached | `Status: stuck`. `TaskUpdate(deleted)` all agentforce tasks. |
 
-**② New Branch** — retries exhausted, parent has < max_branches_per_node tried:
-- Append failed step to running-tree.md (❌ + `*failure:*`).
-- `TaskUpdate({ taskId, status: "completed" })` (the current task, marked completed-with-fail in tree but completed in TaskList so the work is "done").
-- Generate sibling branch step.
-- `TaskCreate` + `TaskUpdate(in_progress)` the new branch.
-- Print: `[Iter N] plan_a / a_s3 → FAIL — new branch a_s3b`
-
-**③ Backtrack** — branches exhausted at this level:
-- Append failure to running-tree.md.
-- `TaskUpdate(completed)` current task.
-- Walk up the tree, find ancestor with branch capacity, generate new branch from there.
-- `TaskCreate` + `TaskUpdate(in_progress)`.
-- Print: `[Iter N] plan_a / a_s3b → FAIL — backtrack, new branch a_s3c`
-
-**④ Plan Failed** — backtrack hits the plan with no options:
-- Move plan to **Abandoned plans** in running-tree.md with failure summary.
-- `TaskList` and `TaskUpdate({ taskId, status: "deleted" })` for any remaining agentforce tasks tied to that plan.
-- Pick next untried plan; generate its first step.
-- `TaskCreate` + `TaskUpdate(in_progress)`.
-- Print: `[Iter N] plan_a EXHAUSTED — switching to plan_b`
-
-**⑤ Stuck** — `len(plans) >= max_plans` and all abandoned:
-- Set `Status: stuck` in running-tree.md.
-- `TaskUpdate({ taskId, status: "deleted" })` for any remaining agentforce tasks.
-- Report.
-
-After updating state, write running-tree.md.
+Print: `[Iter N] plan_a / a_s1 → FAIL — <action>`
 
 ---
 
 ### PHASE 5 — Print Status & Loop
 
-```
-[Iter 5] plan_b / b_s2 → PASS ✓  (verifier: 42/42 tests green)
-[Iter 6] plan_b / b_s3 → FAIL — retry 1/2
-[Iter 7] plan_b / b_s3 → FAIL — new branch b_s3b
-[Iter 8] plan_b / b_s3b → PASS ✓  (verifier: diff confirmed)
-```
-
 Loop back to PHASE 0.
 
 ---
 
-### PHASE 6 — Final Verification Gate (before `Status: done`)
+### PHASE 6 — Final Verification Gate (conditional, before `Status: done`)
 
-You only reach this when you believe the task is fully accomplished. **Do not skip — convergence pressure makes you want to. Spawn one final Verifier on the OVERALL outcome.**
+**Only fire Phase 6 if at least one of:**
+- ≥ 2 verified steps in history
+- ≥ 1 branch was tried
+- ≥ 1 plan was abandoned
+
+**For trivial single-step tasks, the per-step Verifier IS the final verification.** Skip Phase 6 and set `Status: done` directly.
+
+**If conditions met:** `Agent(Final Verifier)`:
 
 ```
 You are a Final Verifier. Determine if a complete outcome is genuine.
 
-You DO NOT know the original task. Only check the literal claim about the
-overall outcome. Look for any way the result could be incomplete, broken,
-or non-functional.
+You DO NOT know the original task. Check ONLY the literal claim. Look for any way the result could be incomplete, broken, or non-functional.
 
 OVERALL CLAIM:
-{{summary of what was accomplished, in checkable terms}}
+{{summary in checkable terms}}
 
 ARTIFACTS:
-{{the running-tree.md file contents}}
-{{any persistent processes from .agentforce/processes/*.json}}
+{{running-tree.md contents}}
+{{persistent process manifests, if any}}
 
-ATTACK PROTOCOL:
-1. Re-run the most important verification (full test suite, end-to-end).
-2. Verify all live processes are still healthy: `kill -0 <pid>` AND functional check.
-3. Try at least 2 attacks to break the overall outcome before accepting.
-4. If anything is missing, broken, or unverified, fail.
+PROTOCOL:
+1. Re-run the most important verification (full test suite, end-to-end check).
+2. Verify all live processes: `kill -0 <pid>` AND functional check.
+3. Try ≥2 attacks to break the outcome before accepting.
 
-End with this JSON:
+Output JSON:
 {
-  "passed": true | false,
-  "evidence": "exact commands run and output",
-  "discrepancy": "what's broken or missing" | null
+  "passed": true|false,
+  "evidence": "...",
+  "discrepancy": "..." | null
 }
 ```
 
-- **If passed**: set `Status: done` in running-tree.md. `TaskUpdate({ taskId, status: "completed" })` for the current task. Print success report.
-- **If failed**: do NOT set done. Treat as a step failure on the most recent step — apply the escalation ladder. Loop to PHASE 0.
+- **Passed:** `Status: done`. `TaskUpdate(completed)`. Print success report.
+- **Failed:** treat as failure on the most recent step. Apply escalation. Loop to PHASE 0.
 
 ---
 
@@ -421,94 +292,77 @@ End with this JSON:
 
 **Done:**
 ```
-✅ DONE (final verification passed)
+✅ DONE
 
 Winning path: plan_b → b_s1 → b_s2 → b_s3b
-Live processes: game-server (pid 12345, port 3199)
-Branches explored: 6 nodes, 2 dead ends
-Plans explored: plan_a (failed), plan_b (success)
-Iterations: 8
+Live processes: <list, or "none">
+Iterations: N
+Plans explored: <count>, branches: <count>, dead ends: <count>
 ```
 
 **Stuck:**
 ```
 ❌ STUCK — all plans exhausted
 
-Tree explored:
-  plan_a: failed — [reason]
-  plan_b: failed — [reason]
+Tried:
+  plan_a: <reason>
+  plan_b: <reason>
 
-What was learned: [concrete findings]
-Live processes (still running): [list, or "none"]
-Suggested next steps: [user-actionable]
+What was learned: <findings>
+Live processes still running: <list>
+Suggested next: <user-actionable>
 ```
 
 ---
 
 ## Protocol Content
 
-When initializing, write this **exact content** to `.agentforce/protocol.md`:
+When initializing, write this to `.agentforce/protocol.md`:
 
 ```markdown
-# AgentForce Protocol — Read at the START of every iteration
+# AgentForce Protocol
 
-You are the Orchestrator. This file restores your protocol after any context
-compaction or drift. Read it fully before you do anything else this iteration.
+Read fully at the start of every iteration. Fresh reads beat memory — survives context compaction.
 
-## Hard rules (no exceptions)
+## Hard rules
 
-1. **Two sub-agent calls per step.** EVERY step requires both an Executor
-   AND a Verifier sub-agent in the same iteration. If you only made one
-   Agent() call, you violated the protocol. Spawn the missing one.
-
-2. **Exactly one task is `in_progress` per iteration.** Use TaskList /
-   TaskCreate / TaskUpdate (owner: "agentforce") for the live planning view.
-   The in_progress task IS the current step. If there is no in_progress task,
-   you have nothing to execute — go to Phase 1 (resume) and create one.
-
-3. **No PASS without evidence.** NEVER mark the in_progress task `completed`
-   or write ✅ to running-tree.md without a Verifier evidence line from THIS
-   iteration's Verifier sub-agent. If the evidence is empty, STOP and spawn
-   the Verifier.
-
-4. **Done-gate.** Before setting Status: done, spawn ONE FINAL Verifier on
-   the OVERALL outcome (not the last step). If it can break the result,
-   you are not done.
+1. Every step requires both `Agent(Executor)` AND `Agent(Verifier)` in the same iteration.
+2. Never mark a step ✅ in running-tree.md without a *verifier:* line from THIS iteration.
+3. Exactly one agentforce task is `in_progress` at any time.
+4. Before `Status: done`: if ≥2 steps verified OR branches tried OR plans abandoned, run a Final Verifier on the overall outcome. For single-step tasks, the per-step Verifier IS the final.
 
 ## Forbidden drift modes
 
-- ❌ Skipping Verifier "because the result is obvious"
-- ❌ Self-certifying "looks done" without a fresh Verifier sub-agent
-- ❌ Marking step PASS based on Executor confidence alone
-- ❌ Truncating the loop because the task "feels finished"
-- ❌ Convincing yourself a final step doesn't need verification "because we're at the end"
-- ❌ Multiple in_progress tasks (only one at a time)
+- Skipping Verifier "because the result is obvious"
+- Self-certifying without spawning a fresh Verifier
+- Multiple in_progress agentforce tasks
+- Marking PASS based on Executor confidence alone
 
-If you feel pressure to finish without verification, that pressure IS the
-drift signal. Spawn the Verifier.
+If you feel pressure to finish without verification, that pressure IS drift. Spawn the Verifier.
 
 ## Self-check before writing running-tree.md
 
-- Did I spawn an Executor sub-agent THIS iteration? (Agent() call)
-- Did I spawn a Verifier sub-agent THIS iteration? (Agent() call)
+- Did I spawn an Executor this iteration?
+- Did I spawn a Verifier this iteration?
 - Does the step I'm marking ✅ have evidence from THIS iteration?
-- Is exactly ONE agentforce task in_progress (or zero if I'm about to create the next one)?
 
-If any answer is "no", do not write — go back and do the missing work.
+If any "no", stop and do the missing work.
 
-## Persistent process rule
+## Persistent process pattern
 
-When the Executor starts a long-lived process (server, daemon, watcher) that
-must outlive the iteration:
+For processes that must outlive this iteration (server, daemon, watcher):
 
-- MUST use the detached pattern:
-    setsid nohup <command> > .agentforce/processes/<name>.log 2>&1 &
-    echo $! > .agentforce/processes/<name>.pid
-    disown
-- MUST write a manifest at .agentforce/processes/<name>.json
-- MUST NOT use plain Bash(run_in_background: true) — that gets killed when
-  the sub-agent ends.
+  setsid nohup <cmd> > .agentforce/processes/<name>.log 2>&1 &
+  echo $! > .agentforce/processes/<name>.pid
+  disown
 
-For one-shot commands (test, build, file op), plain Bash is correct.
-The Executor decides per-command, not per-run.
+Then write manifest at `.agentforce/processes/<name>.json`.
+
+Never use `Bash(run_in_background: true)` for these — gets killed when sub-agent ends.
+
+For one-shot commands (test, build, file op): plain Bash is correct.
+
+## THINK before Execute
+
+Before each Executor spawn, briefly reflect: is the planned step still right? Did the last Verifier reveal something to pivot on? Use TaskList() / read running-tree.md only when needed — most cycles you continue with the current step from working memory.
 ```
