@@ -139,6 +139,19 @@ Plan A's abandoned-section evidence ("decode and signature both valid; login sti
 
 ---
 
+## Goals: The Definition of Done
+
+On init, the Orchestrator extracts **2–6 concrete checkable goals** from the task and writes them to running-tree.md. Each goal is a literal fact you could verify with a command — not vague intent.
+
+```markdown
+## Goals (definition of done)
+- ⏳ `pytest tests/auth.py` exits 0 with all tests passing
+- ⏳ `curl http://localhost:3199/health` returns 200 with body `{"ok": true}`
+- ⏳ The `Set-Cookie: session=...` header is present on `/login` 200 response
+```
+
+As the Verifier proves goals over time, ⏳ → ✅. A run is **only `done` when every goal is ✅** AND (for multi-step runs) the Final Verifier confirms they all hold simultaneously. This makes the success criteria explicit upfront and gives Phase 6 something concrete to attack.
+
 ## THINK Before Execute
 
 Each iteration, before spawning the Executor, the Orchestrator gets a deliberate **THINK** moment:
@@ -147,7 +160,7 @@ Each iteration, before spawning the Executor, the Orchestrator gets a deliberate
 Phase 0 → Phase 1.5 (THINK) → Phase 2 (Executor) → Phase 3 (Verifier) → Phase 4 (state)
 ```
 
-THINK is where Claude's natural planning happens — review the last Verifier evidence, decide whether to continue with the planned step or pivot. Tools like `TaskList()` and reading `running-tree.md` are **available but not mandatory**: most cycles you just continue, occasionally you reshape. The default is to keep moving; THINK is the moment to pivot when warranted.
+THINK is where Claude's natural planning happens — review the last Verifier evidence, check which Goals are still ⏳, decide whether to continue with the planned step or pivot. Tools like `TaskList()` and reading `running-tree.md` are **available but not mandatory**: most cycles you just continue, occasionally you reshape. The default is to keep moving; THINK is the moment to pivot when warranted.
 
 This trades a rigid loop for one that can replan mid-flight without breaking the verify cycle's invariants.
 
@@ -324,8 +337,13 @@ cat .agentforce/running-tree.md
 
 **Task:** Build and verify a multiplayer game server
 **Status:** executing
-**Current:** a_s4
 **Iteration:** 5
+
+## Goals (definition of done)
+- ✅ `node game.js` starts a process listening on port 3199
+- ✅ `curl http://localhost:3199/health` returns 200
+- ⏳ Two `wscat -c ws://localhost:3199` clients can connect simultaneously
+- ⏳ State sent by client A is received by client B within 100ms
 
 ## Live processes
 - 🟢 **game-server** (pid 12345, port 3199) — started iter 3, log: .agentforce/processes/game-server.log
@@ -341,8 +359,8 @@ cat .agentforce/running-tree.md
 - ✅ a_s3 — start server (Pattern 2 persistent process)
   *claim:* pid 12345 listening on port 3199
   *verifier:* confirmed via kill -0 and curl
-- 🔄 a_s4 — connect two test clients [CURRENT]
-  *retry:* 0/2
+
+(current step is in TaskList: "Connect two test clients" — in_progress)
 ```
 
 The whole file is human-readable — you can follow exactly what the agent has tried, what worked, what failed, what processes are still alive, and where it is now.

@@ -44,6 +44,11 @@ Re-read every iteration in Phase 0. Fresh reads survive context compaction.
 **Status:** executing | done | stuck
 **Iteration:** <N>
 
+## Goals (definition of done)
+- ⏳ <concrete checkable goal 1>
+- ⏳ <concrete checkable goal 2>
+- ✅ <goal 3 — already verified>
+
 ## Live processes
 - 🟢 <name> (pid <pid>, port <port>) — started iter <N>, log: <path>
 
@@ -64,7 +69,9 @@ Re-read every iteration in Phase 0. Fresh reads survive context compaction.
   Reason: ...
 ```
 
-Status icons: ✅ passed, ❌ failed. No `[CURRENT]` markers — that's in TaskList. Append-only.
+**Goals** — articulated on init from the task description. Each goal is concrete and checkable (e.g., *"`pytest tests/auth.py` exits 0"* not *"the test works"*). Goals get checked off (⏳ → ✅) as Verifier evidence proves them. The Final Verifier in Phase 6 checks **all goals are ✅** — that IS the definition of done.
+
+Status icons: ✅ verified/passed, ❌ failed, ⏳ not yet achieved. No `[CURRENT]` markers — that's in TaskList. Append-only for the plan tree; the Goals section is updated in place as goals get checked off.
 
 ---
 
@@ -98,11 +105,12 @@ If the file doesn't exist, you're on iteration 1 → proceed to Phase 1.
 **Fresh start (no `.agentforce/`):**
 1. Create `.agentforce/` and `.agentforce/processes/`.
 2. Write `.agentforce/protocol.md` (content in [Protocol Content](#protocol-content) below).
-3. Form **3 plans** with distinct hypotheses (different root causes, not variations).
-4. Generate the first step of plan_a (others stay untried).
-5. Write `running-tree.md`.
-6. `TaskCreate` the first step with `metadata: { node_id, plan_id, hypothesis, retry_count: 0 }`.
-7. `TaskUpdate({ taskId, status: "in_progress", owner: "agentforce" })`. Remember the `taskId`.
+3. **Articulate 2–6 concrete goals** that define "done" for this task. Each goal must be checkable in literal terms — e.g., *"`pytest tests/auth.py` exits 0 with all tests passing"* not *"tests work"*; *"`curl localhost:3199/health` returns 200"* not *"server runs"*. These are the criteria the Final Verifier will check.
+4. Form **3 plans** with distinct hypotheses (different root causes, not variations).
+5. Generate the first step of plan_a (others stay untried).
+6. Write `running-tree.md` with the Goals section (all ⏳ initially) and the plan tree.
+7. `TaskCreate` the first step with `metadata: { node_id, plan_id, hypothesis, retry_count: 0 }`.
+8. `TaskUpdate({ taskId, status: "in_progress", owner: "agentforce" })`. Remember the `taskId`.
 
 **Resume (running-tree.md exists, Status: executing):**
 1. Scan `.agentforce/processes/*.json`: `kill -0 <pid>` per manifest. Dead → archive as `<name>.dead.json`. Live → keep in tree.
@@ -218,12 +226,13 @@ Increment `Iteration` in running-tree.md.
 #### On PASS
 
 1. Append to running-tree.md under the active plan: `✅ <node_id> — <instruction>` + `*claim:*` + `*verifier:*`.
-2. Update Live processes section if the Executor started any.
-3. `TaskUpdate({ taskId, status: "completed" })`.
-4. Decide:
-   - **Task complete?** → proceed to PHASE 6 (conditional).
-   - **Otherwise** → reason about next step. `TaskCreate` it with metadata. `TaskUpdate(in_progress)`. Remember new `taskId`.
-5. Print: `[Iter N] plan_a / a_s1 → PASS ✓ (verifier: <short>)`
+2. **Update Goals**: review the Goals section. If this Verifier evidence proves any goal, flip its ⏳ → ✅. (Be honest — only mark a goal ✅ when the Verifier evidence directly establishes it.)
+3. Update Live processes section if the Executor started any.
+4. `TaskUpdate({ taskId, status: "completed" })`.
+5. Decide:
+   - **All goals ✅?** → proceed to PHASE 6 (conditional).
+   - **Otherwise** → reason about next step toward the remaining ⏳ goals. `TaskCreate` it with metadata. `TaskUpdate(in_progress)`. Remember new `taskId`.
+6. Print: `[Iter N] plan_a / a_s1 → PASS ✓ (verifier: <short>) — goals: 2/4 ✅`
 
 #### On FAIL
 
@@ -249,42 +258,45 @@ Loop back to PHASE 0.
 
 ### PHASE 6 — Final Verification Gate (conditional, before `Status: done`)
 
+**Trigger:** all goals are ✅ in running-tree.md.
+
 **Only fire Phase 6 if at least one of:**
 - ≥ 2 verified steps in history
 - ≥ 1 branch was tried
 - ≥ 1 plan was abandoned
 
-**For trivial single-step tasks, the per-step Verifier IS the final verification.** Skip Phase 6 and set `Status: done` directly.
+**For trivial single-step tasks**, the per-step Verifier IS the final verification. Skip Phase 6 and set `Status: done` directly.
 
-**If conditions met:** `Agent(Final Verifier)`:
+**If conditions met:** `Agent(Final Verifier)` — this is an adversarial check that **all goals hold simultaneously**:
 
 ```
-You are a Final Verifier. Determine if a complete outcome is genuine.
+You are a Final Verifier. Determine if all stated goals are genuinely met right now.
 
-You DO NOT know the original task. Check ONLY the literal claim. Look for any way the result could be incomplete, broken, or non-functional.
+You DO NOT know the original task. You only check the literal goals against current reality.
 
-OVERALL CLAIM:
-{{summary in checkable terms}}
+GOALS TO VERIFY (each must be true RIGHT NOW):
+{{Goals section from running-tree.md, listed as concrete checkable statements}}
 
 ARTIFACTS:
 {{running-tree.md contents}}
 {{persistent process manifests, if any}}
 
 PROTOCOL:
-1. Re-run the most important verification (full test suite, end-to-end check).
-2. Verify all live processes: `kill -0 <pid>` AND functional check.
-3. Try ≥2 attacks to break the outcome before accepting.
+1. Check each goal independently with real commands (Bash/Read/curl/etc).
+2. For process-related goals: `kill -0 <pid>` AND functional check.
+3. Try ≥2 attacks per goal to falsify before accepting.
+4. ANY single goal failing → overall result is failed.
 
 Output JSON:
 {
   "passed": true|false,
-  "evidence": "...",
-  "discrepancy": "..." | null
+  "per_goal": [{ "goal": "...", "passed": true|false, "evidence": "..." }],
+  "discrepancy": "if false, which goal(s) and why" | null
 }
 ```
 
 - **Passed:** `Status: done`. `TaskUpdate(completed)`. Print success report.
-- **Failed:** treat as failure on the most recent step. Apply escalation. Loop to PHASE 0.
+- **Failed:** flip the failed goals back to ⏳ in running-tree.md. Treat as a failure on the most recent step. Apply escalation. Loop to PHASE 0.
 
 ---
 
@@ -329,7 +341,7 @@ Read fully at the start of every iteration. Fresh reads beat memory — survives
 1. Every step requires both `Agent(Executor)` AND `Agent(Verifier)` in the same iteration.
 2. Never mark a step ✅ in running-tree.md without a *verifier:* line from THIS iteration.
 3. Exactly one agentforce task is `in_progress` at any time.
-4. Before `Status: done`: if ≥2 steps verified OR branches tried OR plans abandoned, run a Final Verifier on the overall outcome. For single-step tasks, the per-step Verifier IS the final.
+4. **Goals drive done.** The running-tree.md Goals section is the definition of done. A goal flips ⏳ → ✅ only when this iteration's Verifier evidence directly establishes it. `Status: done` requires all goals ✅ AND (for multi-step / branched / multi-plan runs) a passing Final Verifier in Phase 6.
 
 ## Forbidden drift modes
 
