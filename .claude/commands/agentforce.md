@@ -18,6 +18,8 @@ For your own thinking, use Claude's full natural reasoning — including built-i
 
 **Verifier** — does NOT know the task. Sees only the claim and artifacts. Pure fact-checker. Stripping task context prevents rationalization.
 
+**Thinker** — knows everything (task, goals, full history, all verifier evidence). Spawned every **10 iterations**. Thinks from first principles, looks for blind spots, proposes out-of-box ideas, drafts roadmap items. **Advisory only** — output goes to `.agentforce/thinker-notes.md` and the Orchestrator reads it at the next THINK. The Orchestrator may incorporate or ignore — but should pay attention. Always aligned with the stated goals.
+
 ---
 
 ## Anti-Drift: `.agentforce/protocol.md`
@@ -121,28 +123,95 @@ If the file doesn't exist, you're on iteration 1 → proceed to Phase 1.
 
 ---
 
+### PHASE 1.25 — Thinker (periodic, every 10 iterations)
+
+**Trigger:** `Iteration % 10 == 0 AND Iteration > 0` (i.e., iter 10, 20, 30, ...).
+
+`Agent(Thinker)` with this prompt:
+
+```
+You are a Thinker. You think from first principles. You do NOT execute work.
+Your job: provide strategic advice and out-of-box ideas to the Orchestrator.
+
+You are advisory only. Your suggestions are not binding. The Orchestrator may
+use or ignore them. But think carefully — your perspective matters.
+
+CONTEXT
+
+TASK: {{task}}
+
+GOALS (definition of done, from running-tree.md):
+{{Goals section, with current ⏳/✅ state}}
+
+EXECUTION HISTORY (full running-tree.md):
+{{contents of running-tree.md}}
+
+LIVE PROCESSES:
+{{contents of .agentforce/processes/*.json}}
+
+PRIOR THINKER NOTES (so you don't repeat yourself):
+{{contents of .agentforce/thinker-notes.md, if any}}
+
+YOUR JOB
+
+1. From first principles: is the current trajectory the most efficient path to the goals?
+2. Look for blind spots — approaches the Orchestrator hasn't tried.
+3. Propose out-of-box ideas — different angles, even if the current plan is "working".
+4. Suggest roadmap items: what would naturally come AFTER current goals are met?
+5. If everything is on track, say "no concerns" — don't manufacture problems.
+
+ALWAYS align suggestions with the stated GOALS. Don't drift off-task.
+
+OUTPUT — append this exact format to your response (markdown):
+
+## Thinker Notes (iteration {{N}})
+
+### Assessment
+[1-2 sentences: is the current trajectory good? Any concerns?]
+
+### Suggestions
+- [concrete pivot or improvement, or "none"]
+
+### Out-of-box ideas
+- [novel angle, or "none"]
+
+### Roadmap thoughts (beyond current goals)
+- [forward-looking ideas, or "none"]
+```
+
+**After Thinker returns:**
+1. Append the Thinker output (everything from `## Thinker Notes` onward) to `.agentforce/thinker-notes.md`.
+2. **Do not modify** running-tree.md or the plan based on Thinker output yet — that decision happens in the next phase (THINK).
+3. Print: `[Iter N] 🧠 Thinker fired — see .agentforce/thinker-notes.md`
+
+**Skip this phase** if the trigger condition isn't met.
+
+---
+
 ### PHASE 1.5 — THINK (every iteration)
 
 Before spawning the Executor, take a deliberate thinking moment.
 
 **Reflect on the situation:**
 - What did the last Verifier evidence reveal?
-- Is the planned next step still the right thing to do?
+- Which goals are still ⏳? Is the planned step actually advancing one of them?
+- **If a Thinker fired this iteration or recently** (`.agentforce/thinker-notes.md` has new content): read the latest entry. Pay attention to the suggestions and out-of-box ideas. You may incorporate them, dismiss them, or note them for later — your call. The Thinker is advisory.
 - Has anything emerged that warrants a pivot?
 
 **Tools available (use only when needed — don't ritualize):**
 
 | Tool | When to use |
 |---|---|
-| `TaskList()` | On resume; before switching plans (to find tasks to clean up); when sanity-checking state |
+| Read `.agentforce/thinker-notes.md` | When a Thinker fired this iteration, or you want to revisit prior advice |
+| `TaskList()` | On resume; before switching plans; when sanity-checking state |
 | Read `running-tree.md` | When deciding next step requires broader context |
-| Edit `running-tree.md` | Rare — only when reshape is warranted (plan switch, branch consolidation) |
+| Edit `running-tree.md` | Rare — only when reshape is warranted (plan switch, branch consolidation, incorporating Thinker suggestions) |
 
 **The default is to continue.** Most cycles you already know the current step (from the in_progress task's `description` and `metadata`). Don't force changes for their own sake.
 
-**Output of THINK** (kept in working memory — no tool needed for the simple case):
+**Output of THINK** (kept in working memory):
 - The step description that goes to the Executor
-- Optionally: tree updates to write before Phase 2
+- Optionally: tree updates to write before Phase 2 (e.g., new branches inspired by Thinker suggestions)
 
 ---
 
@@ -377,4 +446,13 @@ For one-shot commands (test, build, file op): plain Bash is correct.
 ## THINK before Execute
 
 Before each Executor spawn, briefly reflect: is the planned step still right? Did the last Verifier reveal something to pivot on? Use TaskList() / read running-tree.md only when needed — most cycles you continue with the current step from working memory.
+
+## Thinker (every 10 iterations)
+
+Every 10 iterations (10, 20, 30...), spawn `Agent(Thinker)` BEFORE the THINK phase. Thinker has full context (task, goals, history, all verifier evidence, prior thinker notes) and provides:
+- First-principles assessment of the current trajectory
+- Suggestions and out-of-box ideas
+- Roadmap thoughts beyond current goals
+
+Thinker output is appended to `.agentforce/thinker-notes.md` and read at the next THINK. **Advisory only** — you may incorporate, defer, or dismiss. But pay attention.
 ```

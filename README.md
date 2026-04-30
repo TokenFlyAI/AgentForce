@@ -139,6 +139,44 @@ Plan A's abandoned-section evidence ("decode and signature both valid; login sti
 
 ---
 
+## The Thinker — Periodic First-Principles Review
+
+Every **10 iterations**, AgentForce spawns a third sub-agent: the **Thinker**. Unlike the Executor (does work) and Verifier (attacks claims), the Thinker steps back and reviews the entire run from first principles:
+
+- Is the current trajectory the most efficient path to the goals?
+- What blind spots is the Orchestrator missing?
+- What out-of-box angles haven't been tried?
+- What roadmap items naturally follow the current goals?
+
+The Thinker has **full context** — task, goals, complete running tree, all verifier evidence, and prior thinker notes (so it doesn't repeat itself). Its output is appended to `.agentforce/thinker-notes.md` and read by the Orchestrator at the next THINK phase.
+
+Crucially, **the Thinker is advisory, not authoritative**. Its suggestions are not binding. The Orchestrator decides whether to incorporate, defer, or dismiss — but should pay attention. This is a "second opinion" mechanism: a fresh perspective that catches drift the per-cycle loop can't see, while keeping the verify-driven core intact.
+
+```
+.agentforce/thinker-notes.md  (excerpt)
+
+## Thinker Notes (iteration 20)
+
+### Assessment
+Plan A's 4 attempts have all failed at the same step. Likely the
+hypothesis is wrong, not the implementation.
+
+### Suggestions
+- Move plan_a to abandoned. Promote plan_c (CORS) — recent verifier
+  evidence at iter 17 showed an OPTIONS preflight failing, which
+  plan_a doesn't explain.
+
+### Out-of-box ideas
+- The bug may not be in this codebase at all — check the load balancer
+  config (nginx.conf) for header stripping.
+
+### Roadmap thoughts (beyond current goals)
+- Once login works, the same Set-Cookie path handles refresh tokens.
+  Worth a regression test even though it's not in the original task.
+```
+
+---
+
 ## Goals: The Definition of Done
 
 On init, the Orchestrator extracts **2–6 concrete checkable goals** from the task and writes them to running-tree.md. Each goal is a literal fact you could verify with a command — not vague intent.
@@ -230,11 +268,11 @@ Persistent processes survive the Executor sub-agent, the Orchestrator, and the e
 ## How It Runs
 
 ```
-Orchestrator  (Claude itself, running the /agentforce skill,
-               using Claude Code's built-in planning)
+Orchestrator  (Claude itself, running the /agentforce skill)
     │   plans, decides, maintains state — does NOT execute
     │
     ├── Running Tree  (.agentforce/running-tree.md, plain markdown)
+    │       ├── Goals (definition of done)
     │       ├── plan_a  (hypothesis 1)
     │       │     └── step_1 ── step_2a
     │       │                └── step_2b  ← branch on failure
@@ -244,11 +282,14 @@ Orchestrator  (Claude itself, running the /agentforce skill,
     ├── Executor sub-agent     (fresh context, KNOWS the task)
     │       └── executes one step, returns a concrete factual claim
     │
-    └── Verifier sub-agent     (fresh context, does NOT know the task)
-            └── attacks the literal claim, returns pass/fail + evidence
+    ├── Verifier sub-agent     (fresh context, does NOT know the task)
+    │       └── attacks the literal claim, returns pass/fail + evidence
+    │
+    └── Thinker sub-agent      (every 10 iters, full context, advisory)
+            └── first-principles review → suggestions, out-of-box ideas, roadmap
 ```
 
-Every loop: Orchestrator reads the markdown tree → picks the current step → spawns Executor → spawns Verifier → rewrites the markdown with updates → loops. State is fully persisted between iterations and human-readable at any time.
+Every loop: Orchestrator reads protocol → THINKs → spawns Executor → spawns Verifier → checks off goals → rewrites the markdown with updates → loops. Every 10 iterations, Thinker runs first to provide strategic advice. State is fully persisted between iterations and human-readable at any time.
 
 ---
 
@@ -393,7 +434,8 @@ At runtime, the working directory gets:
 ```
 .agentforce/
 ├── protocol.md              ← anti-drift rules, re-read every iteration
-├── running-tree.md          ← live state: tree, claims, evidence, live processes
+├── running-tree.md          ← live state: goals, tree, claims, evidence, live processes
+├── thinker-notes.md         ← periodic first-principles advice (every 10 iters)
 └── processes/               ← persistent process manifests + logs (if any)
     ├── <name>.json
     ├── <name>.pid
